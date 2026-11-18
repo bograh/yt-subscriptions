@@ -50,8 +50,11 @@ func (a *App) routes() http.Handler {
 
 // ---- pages ----
 
-func (a *App) page(r *http.Request) views.Page {
-	st := a.store.Snapshot()
+func (a *App) page(r *http.Request) (views.Page, error) {
+	st, err := a.store.Snapshot(r.Context())
+	if err != nil {
+		return views.Page{}, err
+	}
 	a.mu.Lock()
 	job, lastErr := a.job, a.lastErr
 	a.mu.Unlock()
@@ -65,11 +68,16 @@ func (a *App) page(r *http.Request) views.Page {
 		Error:        lastErr,
 		Stats:        views.ComputeStats(st),
 		List:         views.BuildList(st.Channels, q.Get("group"), q.Get("verdict"), q.Get("q")),
-	}
+	}, nil
 }
 
 func (a *App) handleIndex(w http.ResponseWriter, r *http.Request) {
-	render(w, r, views.Dashboard(a.page(r)))
+	p, err := a.page(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	render(w, r, views.Dashboard(p))
 }
 
 func (a *App) handleChannels(w http.ResponseWriter, r *http.Request) {
@@ -78,7 +86,12 @@ func (a *App) handleChannels(w http.ResponseWriter, r *http.Request) {
 		a.handleIndex(w, r)
 		return
 	}
-	render(w, r, views.ChannelList(a.page(r).List))
+	p, err := a.page(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	render(w, r, views.ChannelList(p.List))
 }
 
 func (a *App) handleJob(w http.ResponseWriter, r *http.Request) {
@@ -138,23 +151,8 @@ func (a *App) handleSync(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		return a.store.Update(func(s *store.State) {
-			old := make(map[string]store.Channel, len(s.Channels))
-			for _, c := range s.Channels {
-				old[c.ID] = c
-			}
-			for i := range fresh {
-				c := &fresh[i]
-				if prev, ok := old[c.ID]; ok {
-					c.Analysis = prev.Analysis
-				}
-				if ws, ok := s.Watch[c.ID]; ok {
-					c.WatchCount, c.LastWatched = ws.Count, ws.LastWatched
-				}
-			}
-			s.Channels = fresh
-			s.SyncedAt = time.Now()
-		})
+		// Analyses and watch stats live in their own tables, so they carry over automatically.
+		return a.store.ReplaceChannels(ctx, fresh)
 	})
 }
 
@@ -165,7 +163,10 @@ func (a *App) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	}
 	all := r.URL.Query().Get("all") == "1"
 	a.startJob(w, r, "Analyzing channels with AI", func(ctx context.Context, progress func(int, int)) error {
-		st := a.store.Snapshot()
+		st, err := a.store.Snapshot(ctx)
+		if err != nil {
+			return err
+		}
 		var todo []store.Channel
 		for _, c := range st.Channels {
 			if all || c.Analysis == nil {
@@ -185,13 +186,7 @@ func (a *App) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 				if ctx.Err() != nil {
 					break
 				}
-			} else if err := a.store.Update(func(s *store.State) {
-				for i := range s.Channels {
-					if an, ok := res[s.Channels[i].ID]; ok {
-						s.Channels[i].Analysis = &an
-					}
-				}
-			}); err != nil {
+			} else if err := a.store.SaveAnalyses(ctx, res); err != nil {
 				return err
 			}
 			progress(min(start+analyzeBatchSize, len(todo)), len(todo))
@@ -207,11 +202,10 @@ func (a *App) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleUnsubscribe(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	var subID string
-	for _, c := range a.store.Snapshot().Channels {
-		if c.ID == id {
-			subID = c.SubscriptionID
-		}
+	subID, err := a.store.SubscriptionID(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 	if subID == "" {
 		http.Error(w, "unknown channel", http.StatusNotFound)
@@ -226,24 +220,22 @@ func (a *App) handleUnsubscribe(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	if err := a.store.Update(func(s *store.State) {
-		for i, c := range s.Channels {
-			if c.ID == id {
-				s.Channels = append(s.Channels[:i], s.Channels[i+1:]...)
-				break
-			}
-		}
-	}); err != nil {
+	if err := a.store.DeleteChannel(r.Context(), id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	st, err := a.store.Snapshot(r.Context())
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	// Empty body removes the card; stats are refreshed out-of-band.
-	render(w, r, views.StatsBar(views.ComputeStats(a.store.Snapshot()), true))
+	render(w, r, views.StatsBar(views.ComputeStats(st), true))
 }
 
 func (a *App) handleInterests(w http.ResponseWriter, r *http.Request) {
 	interests := r.FormValue("interests")
-	if err := a.store.Update(func(s *store.State) { s.Interests = interests }); err != nil {
+	if err := a.store.SetInterests(r.Context(), interests); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
@@ -261,18 +253,8 @@ func (a *App) handleHistory(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "Could not read that file (is it the JSON export?): %v", err)
 		return
 	}
-	matched := 0
-	if err := a.store.Update(func(s *store.State) {
-		s.Watch = stats
-		s.HistoryImported = true
-		for i := range s.Channels {
-			ws := stats[s.Channels[i].ID]
-			s.Channels[i].WatchCount, s.Channels[i].LastWatched = ws.Count, ws.LastWatched
-			if ws.Count > 0 {
-				matched++
-			}
-		}
-	}); err != nil {
+	matched, err := a.store.ImportWatchStats(r.Context(), stats)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

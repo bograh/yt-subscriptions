@@ -1,15 +1,22 @@
-// Package store holds the app's data model and persists it as JSON on disk.
+// Package store holds the app's data model and persists it in SQLite.
+//
+// AI analyses live in their own table keyed by channel ID, independent of the
+// current subscription list, so they survive re-syncs, unsubscribes and re-subscribes.
 package store
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
+	"strconv"
 	"time"
 
 	"golang.org/x/oauth2"
+	_ "modernc.org/sqlite"
 )
 
 const (
@@ -55,12 +62,10 @@ func (c Channel) Inactive() bool {
 }
 
 type State struct {
-	Channels        []Channel `json:"channels"`
-	Interests       string    `json:"interests"`
-	SyncedAt        time.Time `json:"synced_at"`
-	HistoryImported bool      `json:"history_imported"`
-	// Watch stats per channel ID from the Takeout import, kept so re-syncs can reapply them.
-	Watch map[string]WatchStat `json:"watch,omitempty"`
+	Channels        []Channel
+	Interests       string
+	SyncedAt        time.Time
+	HistoryImported bool
 }
 
 type WatchStat struct {
@@ -68,81 +73,360 @@ type WatchStat struct {
 	LastWatched time.Time `json:"last_watched"`
 }
 
-// Store is a mutex-guarded JSON file store.
+const schema = `
+CREATE TABLE IF NOT EXISTS channels (
+	id               TEXT PRIMARY KEY,
+	subscription_id  TEXT NOT NULL,
+	title            TEXT NOT NULL,
+	description      TEXT NOT NULL DEFAULT '',
+	thumbnail        TEXT NOT NULL DEFAULT '',
+	subscribed_at    INTEGER,
+	subscriber_count INTEGER NOT NULL DEFAULT 0,
+	video_count      INTEGER NOT NULL DEFAULT 0,
+	topics           TEXT NOT NULL DEFAULT '[]',
+	uploads_playlist TEXT NOT NULL DEFAULT '',
+	last_upload      INTEGER,
+	recent_titles    TEXT NOT NULL DEFAULT '[]'
+);
+CREATE TABLE IF NOT EXISTS analyses (
+	channel_id   TEXT PRIMARY KEY,
+	category     TEXT NOT NULL,
+	content_type TEXT NOT NULL,
+	verdict      TEXT NOT NULL,
+	reason       TEXT NOT NULL,
+	analyzed_at  INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS watch_stats (
+	channel_id   TEXT PRIMARY KEY,
+	count        INTEGER NOT NULL,
+	last_watched INTEGER
+);
+CREATE TABLE IF NOT EXISTS settings (
+	key   TEXT PRIMARY KEY,
+	value TEXT NOT NULL
+);`
+
+const (
+	keyInterests       = "interests"
+	keySyncedAt        = "synced_at"
+	keyHistoryImported = "history_imported"
+	keyOAuthToken      = "oauth_token"
+)
+
 type Store struct {
-	mu    sync.RWMutex
-	dir   string
-	state State
-	token *oauth2.Token
+	db *sql.DB
 }
 
 func Open(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	s := &Store{dir: dir}
-	if err := readJSON(filepath.Join(dir, "state.json"), &s.state); err != nil {
+	dsn := "file:" + filepath.Join(dir, "app.db") +
+		"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
 		return nil, err
 	}
-	var tok oauth2.Token
-	if err := readJSON(filepath.Join(dir, "token.json"), &tok); err != nil {
-		return nil, err
+	db.SetMaxOpenConns(1) // SQLite has a single writer; this avoids SQLITE_BUSY entirely.
+	if _, err := db.Exec(schema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("create schema: %w", err)
 	}
-	if tok.AccessToken != "" || tok.RefreshToken != "" {
-		s.token = &tok
+	s := &Store{db: db}
+	if err := s.migrateJSON(dir); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate json data: %w", err)
 	}
 	return s, nil
 }
 
-// Snapshot returns a deep-enough copy of the state for read-only use.
-func (s *Store) Snapshot() State {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	st := s.state
-	st.Channels = append([]Channel(nil), s.state.Channels...)
-	return st
+func (s *Store) Close() error { return s.db.Close() }
+
+// Snapshot loads the current subscriptions with their analyses and watch stats.
+func (s *Store) Snapshot(ctx context.Context) (State, error) {
+	var st State
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT c.id, c.subscription_id, c.title, c.description, c.thumbnail, c.subscribed_at,
+		       c.subscriber_count, c.video_count, c.topics, c.uploads_playlist, c.last_upload, c.recent_titles,
+		       COALESCE(w.count, 0), w.last_watched,
+		       a.category, a.content_type, a.verdict, a.reason, a.analyzed_at
+		FROM channels c
+		LEFT JOIN watch_stats w ON w.channel_id = c.id
+		LEFT JOIN analyses a    ON a.channel_id = c.id
+		ORDER BY c.title COLLATE NOCASE`)
+	if err != nil {
+		return st, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			c                                 Channel
+			subscribedAt, lastUpload, watched sql.NullInt64
+			topics, titles                    string
+			category, ctype, verdict, reason  sql.NullString
+			analyzedAt                        sql.NullInt64
+		)
+		if err := rows.Scan(&c.ID, &c.SubscriptionID, &c.Title, &c.Description, &c.Thumbnail, &subscribedAt,
+			&c.SubscriberCount, &c.VideoCount, &topics, &c.UploadsPlaylist, &lastUpload, &titles,
+			&c.WatchCount, &watched,
+			&category, &ctype, &verdict, &reason, &analyzedAt); err != nil {
+			return st, err
+		}
+		c.SubscribedAt, c.LastUpload, c.LastWatched = fromUnix(subscribedAt), fromUnix(lastUpload), fromUnix(watched)
+		_ = json.Unmarshal([]byte(topics), &c.Topics)
+		_ = json.Unmarshal([]byte(titles), &c.RecentTitles)
+		if verdict.Valid {
+			c.Analysis = &Analysis{
+				Category: category.String, ContentType: ctype.String, Verdict: verdict.String,
+				Reason: reason.String, AnalyzedAt: fromUnix(analyzedAt),
+			}
+		}
+		st.Channels = append(st.Channels, c)
+	}
+	if err := rows.Err(); err != nil {
+		return st, err
+	}
+
+	settings, err := s.settings(ctx)
+	if err != nil {
+		return st, err
+	}
+	st.Interests = settings[keyInterests]
+	st.HistoryImported = settings[keyHistoryImported] == "1"
+	if v, err := strconv.ParseInt(settings[keySyncedAt], 10, 64); err == nil {
+		st.SyncedAt = time.Unix(v, 0)
+	}
+	return st, nil
 }
 
-// Update mutates state under lock and persists it.
-func (s *Store) Update(fn func(*State)) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	fn(&s.state)
-	return writeJSON(filepath.Join(s.dir, "state.json"), s.state)
+// SubscriptionID returns the YouTube subscription ID for a channel, or "" if not subscribed.
+func (s *Store) SubscriptionID(ctx context.Context, channelID string) (string, error) {
+	var id string
+	err := s.db.QueryRowContext(ctx, `SELECT subscription_id FROM channels WHERE id = ?`, channelID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return id, err
+}
+
+// ReplaceChannels swaps in a freshly synced subscription list. Analyses are untouched.
+func (s *Store) ReplaceChannels(ctx context.Context, channels []Channel) error {
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`DELETE FROM channels`); err != nil {
+			return err
+		}
+		stmt, err := tx.Prepare(`INSERT OR REPLACE INTO channels
+			(id, subscription_id, title, description, thumbnail, subscribed_at, subscriber_count,
+			 video_count, topics, uploads_playlist, last_upload, recent_titles)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		if err != nil {
+			return err
+		}
+		defer stmt.Close()
+		for _, c := range channels {
+			if _, err := stmt.Exec(c.ID, c.SubscriptionID, c.Title, c.Description, c.Thumbnail, toUnix(c.SubscribedAt),
+				c.SubscriberCount, c.VideoCount, jsonList(c.Topics), c.UploadsPlaylist, toUnix(c.LastUpload),
+				jsonList(c.RecentTitles)); err != nil {
+				return err
+			}
+		}
+		return setSetting(tx, keySyncedAt, strconv.FormatInt(time.Now().Unix(), 10))
+	})
+}
+
+func (s *Store) SaveAnalyses(ctx context.Context, analyses map[string]Analysis) error {
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		stmt, err := tx.Prepare(`INSERT OR REPLACE INTO analyses
+			(channel_id, category, content_type, verdict, reason, analyzed_at) VALUES (?, ?, ?, ?, ?, ?)`)
+		if err != nil {
+			return err
+		}
+		defer stmt.Close()
+		for id, a := range analyses {
+			if _, err := stmt.Exec(id, a.Category, a.ContentType, a.Verdict, a.Reason, a.AnalyzedAt.Unix()); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// DeleteChannel removes a channel from the subscription list after unsubscribing.
+// Its analysis is kept in case you subscribe again.
+func (s *Store) DeleteChannel(ctx context.Context, channelID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM channels WHERE id = ?`, channelID)
+	return err
+}
+
+func (s *Store) SetInterests(ctx context.Context, interests string) error {
+	return s.tx(ctx, func(tx *sql.Tx) error { return setSetting(tx, keyInterests, interests) })
+}
+
+// ImportWatchStats replaces all watch stats and returns how many current subscriptions were watched.
+func (s *Store) ImportWatchStats(ctx context.Context, stats map[string]WatchStat) (matched int, err error) {
+	err = s.tx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`DELETE FROM watch_stats`); err != nil {
+			return err
+		}
+		stmt, err := tx.Prepare(`INSERT INTO watch_stats (channel_id, count, last_watched) VALUES (?, ?, ?)`)
+		if err != nil {
+			return err
+		}
+		defer stmt.Close()
+		for id, w := range stats {
+			if _, err := stmt.Exec(id, w.Count, toUnix(w.LastWatched)); err != nil {
+				return err
+			}
+		}
+		if err := setSetting(tx, keyHistoryImported, "1"); err != nil {
+			return err
+		}
+		return tx.QueryRow(`SELECT COUNT(*) FROM channels c JOIN watch_stats w ON w.channel_id = c.id`).Scan(&matched)
+	})
+	return matched, err
 }
 
 func (s *Store) Token() *oauth2.Token {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.token
+	var raw string
+	if err := s.db.QueryRow(`SELECT value FROM settings WHERE key = ?`, keyOAuthToken).Scan(&raw); err != nil {
+		return nil
+	}
+	var t oauth2.Token
+	if json.Unmarshal([]byte(raw), &t) != nil {
+		return nil
+	}
+	return &t
 }
 
 func (s *Store) SaveToken(t *oauth2.Token) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.token = t
-	return writeJSON(filepath.Join(s.dir, "token.json"), t)
+	b, err := json.Marshal(t)
+	if err != nil {
+		return err
+	}
+	return s.tx(context.Background(), func(tx *sql.Tx) error { return setSetting(tx, keyOAuthToken, string(b)) })
 }
 
-func readJSON(path string, v any) error {
-	b, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
+// ---- helpers ----
+
+func (s *Store) tx(ctx context.Context, fn func(*sql.Tx) error) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	if err := fn(tx); err != nil {
+		tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) settings(ctx context.Context) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT key, value FROM settings`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	m := map[string]string{}
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, err
+		}
+		m[k] = v
+	}
+	return m, rows.Err()
+}
+
+func setSetting(tx *sql.Tx, key, value string) error {
+	_, err := tx.Exec(`INSERT INTO settings (key, value) VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
+	return err
+}
+
+func toUnix(t time.Time) any {
+	if t.IsZero() {
 		return nil
 	}
-	if err != nil {
-		return err
-	}
-	return json.Unmarshal(b, v)
+	return t.Unix()
 }
 
-func writeJSON(path string, v any) error {
-	b, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return err
+func fromUnix(v sql.NullInt64) time.Time {
+	if !v.Valid {
+		return time.Time{}
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return err
+	return time.Unix(v.Int64, 0)
+}
+
+func jsonList(xs []string) string {
+	if xs == nil {
+		return "[]"
 	}
-	return os.Rename(tmp, path)
+	b, _ := json.Marshal(xs)
+	return string(b)
+}
+
+// migrateJSON imports data from the earlier JSON-file storage (state.json / token.json)
+// once, then renames those files to *.migrated.
+func (s *Store) migrateJSON(dir string) error {
+	statePath, tokenPath := filepath.Join(dir, "state.json"), filepath.Join(dir, "token.json")
+	ctx := context.Background()
+
+	if b, err := os.ReadFile(statePath); err == nil {
+		var old struct {
+			Channels        []Channel            `json:"channels"`
+			Interests       string               `json:"interests"`
+			SyncedAt        time.Time            `json:"synced_at"`
+			HistoryImported bool                 `json:"history_imported"`
+			Watch           map[string]WatchStat `json:"watch"`
+		}
+		if err := json.Unmarshal(b, &old); err != nil {
+			return err
+		}
+		if err := s.ReplaceChannels(ctx, old.Channels); err != nil {
+			return err
+		}
+		analyses := map[string]Analysis{}
+		for _, c := range old.Channels {
+			if c.Analysis != nil {
+				analyses[c.ID] = *c.Analysis
+			}
+		}
+		if err := s.SaveAnalyses(ctx, analyses); err != nil {
+			return err
+		}
+		if old.HistoryImported {
+			if _, err := s.ImportWatchStats(ctx, old.Watch); err != nil {
+				return err
+			}
+		}
+		if err := s.tx(ctx, func(tx *sql.Tx) error {
+			if err := setSetting(tx, keyInterests, old.Interests); err != nil {
+				return err
+			}
+			if old.SyncedAt.IsZero() {
+				_, err := tx.Exec(`DELETE FROM settings WHERE key = ?`, keySyncedAt)
+				return err
+			}
+			return setSetting(tx, keySyncedAt, strconv.FormatInt(old.SyncedAt.Unix(), 10))
+		}); err != nil {
+			return err
+		}
+		if err := os.Rename(statePath, statePath+".migrated"); err != nil {
+			return err
+		}
+	}
+
+	if b, err := os.ReadFile(tokenPath); err == nil {
+		var t oauth2.Token
+		if err := json.Unmarshal(b, &t); err != nil {
+			return err
+		}
+		if err := s.SaveToken(&t); err != nil {
+			return err
+		}
+		if err := os.Rename(tokenPath, tokenPath+".migrated"); err != nil {
+			return err
+		}
+	}
+	return nil
 }

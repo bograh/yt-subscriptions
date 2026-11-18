@@ -42,7 +42,10 @@ If you change the port (`make docker-run PORT=9090`), add the new redirect URI t
 3. Click **Analyze new**. Only channels that haven't been analyzed yet are sent. Use **Re-analyze all** after changing your interests or history.
 4. Group by Category, Kind of videos, or Suggestion. Filter, search, and unsubscribe.
 
-Data (channels, analysis, OAuth token) is stored in `data/` as JSON.
+Everything (channels, AI analyses, watch stats, settings, OAuth token) is stored in SQLite at `data/app.db`.
+Analyses are kept per channel in their own table, so syncing, unsubscribing or re-subscribing never throws them away.
+Only **Re-analyze all** spends AI calls on channels that were already categorized.
+If you used an earlier version that stored data in `state.json`/`token.json`, that data is imported automatically on first start.
 
 ## Notes
 
