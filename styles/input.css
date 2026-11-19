@@ -39,6 +39,7 @@
   --color-drop-ink: oklch(98% 0.01 85);
   --color-review: oklch(66% 0.13 78);
   --color-keep: oklch(55% 0.11 152);
+  --color-merge: oklch(55% 0.12 255);
   --color-focus: oklch(55% 0.19 33);
 
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
@@ -60,6 +61,7 @@
       --color-drop-ink: oklch(17% 0.01 40);
       --color-review: oklch(76% 0.12 80);
       --color-keep: oklch(72% 0.11 152);
+      --color-merge: oklch(72% 0.10 255);
       --color-focus: oklch(72% 0.15 35);
     }
   }

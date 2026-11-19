@@ -1,0 +1,224 @@
+package views
+
+import (
+	"fmt"
+	"yt-subscriptions/internal/store"
+)
+
+templ PlaylistsPage(p PlaylistPage) {
+	@layout() {
+		@appHeader(HeaderData{Active: "playlists", SyncedAt: p.State.SyncedAt, Connected: p.Connected, OAuthReady: p.OAuthReady, Job: p.Job}) {
+			<button hx-post="/playlists/sync" hx-target="#job" hx-swap="outerHTML" class="btn">Sync</button>
+			<button hx-post="/playlists/analyze" hx-target="#job" hx-swap="outerHTML" class="btn btn-primary" disabled?={ !p.AIConfigured || len(p.State.Playlists) == 0 }>
+				Analyze new
+				if p.Stats.Pending() > 0 {
+					<span class="font-mono text-xs tabular-nums opacity-70">{ fmt.Sprint(p.Stats.Pending()) }</span>
+				}
+			</button>
+			<button hx-post="/playlists/analyze?all=1" hx-target="#job" hx-swap="outerHTML" hx-confirm="Send every playlist to the AI again? This replaces the current suggestions." class="btn" disabled?={ !p.AIConfigured || len(p.State.Playlists) == 0 }>Re-analyze all</button>
+		}
+		<main class="mx-auto max-w-6xl px-4 pb-24 sm:px-8">
+			@pageNotices(p.OAuthReady, p.AIConfigured, p.Error, p.Warning, p.Flash)
+			@PlaylistSummary(p.Stats, false)
+			<p class="mt-6 border-t border-rule pt-4 text-sm text-muted">
+				Suggestions use the interests you set under
+				<a href="/" class="underline underline-offset-2 hover:text-ink">Subscriptions → Tune the suggestions</a>.
+				Liked videos and Watch Later aren't available through YouTube's API.
+			</p>
+			<form
+				id="filters"
+				hx-get="/playlists/list"
+				hx-target="#playlist-list"
+				hx-swap="outerHTML"
+				hx-push-url="true"
+				hx-trigger="change, input from:#q delay:300ms"
+				class="sticky top-0 z-10 -mx-4 mt-8 flex flex-wrap items-center gap-x-4 gap-y-3 border-y border-rule bg-paper px-4 py-3 sm:-mx-8 sm:px-8"
+			>
+				<fieldset class="flex items-center gap-1">
+					<legend class="sr-only">Group by</legend>
+					<span class="mr-2 text-sm text-muted">Group by</span>
+					@groupOption("topic", "Topic", p.List.GroupBy)
+					@groupOption("verdict", "Suggestion", p.List.GroupBy)
+				</fieldset>
+				<div class="flex w-full min-w-0 flex-wrap items-center gap-3 sm:w-auto sm:flex-1 sm:justify-end">
+					<label class="sr-only" for="verdict">Show</label>
+					<select id="verdict" name="verdict" class="field w-full pr-8 sm:w-auto">
+						@verdictOption("", "All suggestions", p.List.Verdict)
+						@verdictOption("delete", "Delete", p.List.Verdict)
+						@verdictOption("merge", "Merge", p.List.Verdict)
+						@verdictOption("review", "Review", p.List.Verdict)
+						@verdictOption("keep", "Keep", p.List.Verdict)
+						@verdictOption("problems", "Has problems", p.List.Verdict)
+						@verdictOption("unanalyzed", "Not analyzed", p.List.Verdict)
+					</select>
+					<label class="sr-only" for="q">Search playlists</label>
+					<input id="q" type="search" name="q" value={ p.List.Query } placeholder="Search playlists" class="field w-full min-w-0 sm:w-64"/>
+				</div>
+			</form>
+			@PlaylistRows(p.List)
+		</main>
+	}
+}
+
+templ PlaylistSummary(s PlaylistStats, oob bool) {
+	<section id="summary" hx-swap-oob?={ oob } class="pt-10">
+		<p class="max-w-3xl text-2xl leading-snug font-medium tracking-[-0.02em] sm:text-[1.875rem]">
+			if s.Total == 0 {
+				No playlists yet. Connect YouTube and sync to start.
+			} else if s.Analyzed() == 0 {
+				{ fmt.Sprint(s.Total) } playlists, none reviewed yet.
+			} else {
+				{ fmt.Sprint(s.Total) } playlists.
+				@sentenceText(s.Sentence())
+			}
+		</p>
+		if s.Total > 0 {
+			<div class="mt-5 flex h-2 gap-px overflow-hidden rounded-full bg-paper-2" aria-hidden="true">
+				<div class="bg-drop" style={ "width: " + s.Pct(s.Delete) }></div>
+				<div class="bg-merge" style={ "width: " + s.Pct(s.Merge) }></div>
+				<div class="bg-review" style={ "width: " + s.Pct(s.Review) }></div>
+				<div class="bg-keep" style={ "width: " + s.Pct(s.Keep) }></div>
+				<div class="bg-rule" style={ "width: " + s.Pct(s.Unanalyzed) }></div>
+			</div>
+			<ul class="mt-3 flex flex-wrap gap-x-5 gap-y-1 font-mono text-xs text-muted tabular-nums">
+				@legend("bg-drop", "Delete", s.Delete)
+				@legend("bg-merge", "Merge", s.Merge)
+				@legend("bg-review", "Review", s.Review)
+				@legend("bg-keep", "Keep", s.Keep)
+				if s.Unanalyzed > 0 {
+					@legend("bg-rule-strong", "Not analyzed", s.Unanalyzed)
+				}
+				if s.Outdated > 0 {
+					<li>{ fmt.Sprint(s.Outdated) } outdated</li>
+				}
+				<li>{ fmt.Sprint(s.Unavailable) } unavailable videos</li>
+				<li>{ fmt.Sprint(s.Duplicates) } duplicates</li>
+				<li title="Estimated YouTube Data API units used today. Resets at midnight Pacific time.">quota { Thousands(s.QuotaUsed) } / { Thousands(s.QuotaLimit) } today</li>
+			</ul>
+			if s.Cleanable() > 0 {
+				<div class="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2">
+					<button
+						hx-post="/playlists/clean-all"
+						hx-target="#job"
+						hx-swap="outerHTML"
+						hx-confirm={ fmt.Sprintf("Remove %d unavailable videos and duplicates from your playlists? This uses about %s of your %s remaining quota units.", s.Cleanable(), Thousands(s.Cleanable()*50), Thousands(s.QuotaRemaining())) }
+						class="btn"
+					>Clean up all playlists</button>
+					<p class="text-sm text-muted">{ s.CleanAllNote() }</p>
+				</div>
+			}
+		}
+	</section>
+}
+
+templ PlaylistRows(l PlaylistList) {
+	<div id="playlist-list">
+		if l.Shown == 0 {
+			<p class="py-20 text-center text-sm text-muted">Nothing matches. Clear the search or pick another filter.</p>
+		}
+		for _, g := range l.Groups {
+			<section class="mt-10">
+				<h2 class="flex items-baseline justify-between border-b border-ink pb-2">
+					<span class="font-semibold tracking-[-0.01em]">{ g.Name }</span>
+					<span class="font-mono text-xs text-muted tabular-nums">{ fmt.Sprint(len(g.Playlists)) }</span>
+				</h2>
+				<ul class="divide-y divide-rule">
+					for _, p := range g.Playlists {
+						@PlaylistRow(p, l)
+					}
+				</ul>
+			</section>
+		}
+	</div>
+}
+
+templ PlaylistRow(p store.Playlist, l PlaylistList) {
+	<li id={ "pl-" + p.ID } class="grid grid-cols-[4.5rem_minmax(0,1fr)] gap-x-4 gap-y-2 py-4 md:grid-cols-[4.5rem_minmax(0,15rem)_minmax(0,1fr)_auto] md:items-start">
+		if p.Thumbnail != "" {
+			<img src={ p.Thumbnail } alt="" loading="lazy" class="aspect-video w-[4.5rem] rounded-[4px] bg-paper-2 object-cover"/>
+		} else {
+			<div class="aspect-video w-[4.5rem] rounded-[4px] bg-paper-2" aria-hidden="true"></div>
+		}
+		<div class="min-w-0">
+			<a href={ templ.SafeURL(p.URL()) } target="_blank" rel="noreferrer" class="block truncate font-medium hover:underline hover:underline-offset-2">{ p.Title }</a>
+			<p class="mt-0.5 font-mono text-xs text-muted tabular-nums">
+				{ plural(len(p.Items), "video", "videos") }
+				if Privacy(p) != "" {
+					· { Privacy(p) }
+				}
+				if !p.LastAdded.IsZero() {
+					· last added { Ago(p.LastAdded) }
+				}
+			</p>
+			if problems := PlaylistProblems(p); problems != "" {
+				<p class="font-mono text-xs text-drop tabular-nums">{ problems }</p>
+			}
+			if note := PlaylistOverlapNote(p); note != "" {
+				<p class="font-mono text-xs text-muted tabular-nums">{ note }</p>
+			}
+		</div>
+		<div class="col-start-2 min-w-0 md:col-start-auto">
+			if p.Decision != "" {
+				<p class="flex flex-wrap items-center gap-x-2 text-sm">
+					<span class={ "size-2 shrink-0 rounded-[2px]", PlaylistVerdictMark(p.Decision) } aria-hidden="true"></span>
+					<span class="font-medium">{ PlaylistVerdictLabel(p.Decision) }</span>
+					<span class="text-muted">your call</span>
+				</p>
+				if p.Analysis != nil && p.Analysis.Verdict != p.Decision {
+					<p class="mt-1 text-sm leading-relaxed text-muted">AI suggested { PlaylistVerdictLabel(p.Analysis.Verdict) }: { p.Analysis.Reason }</p>
+				}
+			} else if p.Analysis != nil {
+				<p class="flex flex-wrap items-center gap-x-2 text-sm">
+					<span class={ "size-2 shrink-0 rounded-[2px]", PlaylistVerdictMark(p.Analysis.Verdict) } aria-hidden="true"></span>
+					if t, ok := l.MergeTarget(p); ok {
+						<span class="font-medium">Merge into { t.Title }</span>
+					} else {
+						<span class="font-medium">{ PlaylistVerdictLabel(p.Analysis.Verdict) }</span>
+					}
+					<span class="text-muted">{ p.Analysis.Topic }</span>
+					if p.Analysis.Outdated {
+						<span class="rounded-[3px] border border-rule-strong px-1.5 font-mono text-[0.6875rem] text-muted" title="Your interests changed since this was analyzed. Analyze new to refresh it.">outdated</span>
+					}
+				</p>
+				<p class="mt-1 text-sm leading-relaxed text-ink-2">{ p.Analysis.Reason }</p>
+			} else {
+				<p class="text-sm text-muted">Not analyzed yet</p>
+			}
+		</div>
+		<div class="col-start-2 flex flex-wrap gap-2 md:col-start-auto md:justify-end">
+			if p.Decision != "" {
+				<button hx-delete={ "/playlists/" + p.ID + "/keep" } hx-target={ "#pl-" + p.ID } hx-swap="outerHTML" class="btn btn-sm">Undo</button>
+			} else if p.Verdict() != store.PlaylistKeep {
+				<button hx-post={ "/playlists/" + p.ID + "/keep" } hx-target={ "#pl-" + p.ID } hx-swap="outerHTML" class="btn btn-sm" title="Keep this playlist as it is. Re-analysis won't change it.">Keep</button>
+			}
+			if n := p.Unavailable + len(p.Duplicates); n > 0 {
+				<button
+					hx-post={ "/playlists/" + p.ID + "/clean" }
+					hx-target="#job"
+					hx-swap="outerHTML"
+					hx-confirm={ fmt.Sprintf("Remove %d unavailable or duplicate videos from %s? About %s quota units.", n, p.Title, Thousands(n*50)) }
+					class="btn btn-sm"
+				>Clean up</button>
+			}
+			if t, ok := l.MergeTarget(p); ok && p.Decision == "" {
+				<button
+					hx-post={ "/playlists/" + p.ID + "/merge" }
+					hx-target="#job"
+					hx-swap="outerHTML"
+					hx-confirm={ fmt.Sprintf("Copy %d videos from %s into %s, then delete %s? About %s quota units.", MergeMoves(p, t), p.Title, t.Title, p.Title, Thousands(MergeMoves(p, t)*50+50)) }
+					class="btn btn-sm"
+				>Merge</button>
+			}
+			<button
+				hx-delete={ "/playlists/" + p.ID }
+				hx-target={ "#pl-" + p.ID }
+				hx-swap="outerHTML"
+				hx-confirm={ "Delete the playlist " + p.Title + " from YouTube? The videos themselves aren't affected. This can't be undone." }
+				class="btn btn-sm btn-drop"
+			>
+				<span class="htmx-hide-on-request">Delete</span>
+				<span class="htmx-indicator">Deleting…</span>
+			</button>
+		</div>
+	</li>
+}

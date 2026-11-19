@@ -4,9 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
-	"time"
 
-	"yt-subscriptions/internal/ai"
 	"yt-subscriptions/internal/store"
 )
 
@@ -110,32 +108,9 @@ func (a *App) analyzeBatch(ctx context.Context, st store.State, batch []store.Ch
 }
 
 func (a *App) analyzeWithRetry(ctx context.Context, st store.State, batch []store.Channel) (map[string]store.Analysis, error) {
-	backoff := a.retryBackoff
-	if backoff == 0 {
-		backoff = 2 * time.Second
-	}
-	var err error
-	for attempt := 1; attempt <= analyzeAttempts; attempt++ {
-		var got map[string]store.Analysis
-		got, err = a.analyzer().Analyze(ctx, st.Interests, st.HistoryImported, batch)
-		if err == nil {
-			return got, nil
-		}
-		var httpErr *ai.HTTPError
-		if errors.As(err, &httpErr) && !httpErr.Retryable() {
-			return nil, err // bad request, auth, unknown model: retrying won't help
-		}
-		if attempt == analyzeAttempts {
-			break
-		}
-		select {
-		case <-time.After(backoff):
-			backoff *= 2
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
-	return nil, err
+	return retry(ctx, a.retryBackoff, func() (map[string]store.Analysis, error) {
+		return a.analyzer().Analyze(ctx, st.Interests, st.HistoryImported, batch)
+	})
 }
 
 func (a *App) analyzer() analyzer {

@@ -39,14 +39,16 @@ type App struct {
 	quotaLimit  int    // YouTube API units per day (YOUTUBE_DAILY_QUOTA)
 	ytBase      string // YouTube API base URL override (tests)
 	// Test hooks for the analysis job.
-	testAnalyzer analyzer
-	retryBackoff time.Duration
+	testAnalyzer         analyzer
+	testPlaylistAnalyzer playlistAnalyzer
+	retryBackoff         time.Duration
 }
 
 func (a *App) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /static/", staticHandler())
 	mux.HandleFunc("GET /{$}", a.handleIndex)
+	a.playlistRoutes(mux)
 	mux.HandleFunc("GET /channels", a.handleChannels)
 	mux.HandleFunc("DELETE /channels/{id}", a.handleUnsubscribe)
 	mux.HandleFunc("POST /unsubscribe-suggested", a.handleBulkUnsubscribe)
