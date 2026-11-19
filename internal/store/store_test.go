@@ -132,3 +132,45 @@ func TestMigratesJSONFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestAnalysesGoOutdatedWhenBasisChanges(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.ReplaceChannels(ctx, []Channel{{ID: "UC1", SubscriptionID: "s1", Title: "A"}, {ID: "UC2", SubscriptionID: "s2", Title: "B"}})
+	s.SetInterests(ctx, "go")
+	st, _ := s.Snapshot(ctx)
+	s.SaveAnalyses(ctx, map[string]Analysis{
+		"UC1": {Verdict: VerdictKeep, AnalyzedAt: time.Now(), Basis: st.Basis},
+		"UC2": {Verdict: VerdictKeep, AnalyzedAt: time.Now()}, // legacy row without a basis
+	})
+
+	st, _ = s.Snapshot(ctx)
+	if st.Channels[0].Analysis.Outdated || st.Channels[1].Analysis.Outdated {
+		t.Fatal("nothing changed yet; nothing should be outdated")
+	}
+
+	s.SetInterests(ctx, "cooking")
+	st, _ = s.Snapshot(ctx)
+	if !st.Channels[0].Analysis.Outdated {
+		t.Fatal("changing interests should outdate UC1")
+	}
+	if st.Channels[1].Analysis.Outdated {
+		t.Fatal("legacy analyses without a basis are not flagged")
+	}
+
+	s.SetInterests(ctx, "go")
+	st, _ = s.Snapshot(ctx)
+	if st.Channels[0].Analysis.Outdated {
+		t.Fatal("restoring the same interests should match again")
+	}
+	if _, err := s.ImportWatchStats(ctx, map[string]WatchStat{}); err != nil {
+		t.Fatal(err)
+	}
+	st, _ = s.Snapshot(ctx)
+	if !st.Channels[0].Analysis.Outdated {
+		t.Fatal("importing watch history should outdate UC1")
+	}
+}

@@ -36,6 +36,7 @@ type App struct {
 	job         views.Job
 	lastErr     string
 	lastWarn    string
+	flash       string // one-time notice, cleared once shown
 	oauthStates map[string]time.Time
 }
 
@@ -64,7 +65,8 @@ func (a *App) page(r *http.Request) (views.Page, error) {
 		return views.Page{}, err
 	}
 	a.mu.Lock()
-	job, lastErr, lastWarn := a.job, a.lastErr, a.lastWarn
+	job, lastErr, lastWarn, flash := a.job, a.lastErr, a.lastWarn, a.flash
+	a.flash = ""
 	a.mu.Unlock()
 	q := r.URL.Query()
 	return views.Page{
@@ -75,6 +77,7 @@ func (a *App) page(r *http.Request) (views.Page, error) {
 		Job:          job,
 		Error:        lastErr,
 		Warning:      lastWarn,
+		Flash:        flash,
 		Stats:        views.ComputeStats(st),
 		List:         views.BuildList(st.Channels, q.Get("group"), q.Get("verdict"), q.Get("q")),
 	}, nil
@@ -202,7 +205,7 @@ func (a *App) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		}
 		var todo []store.Channel
 		for _, c := range st.Channels {
-			if all || c.Analysis == nil {
+			if all || c.Analysis == nil || c.Analysis.Outdated {
 				todo = append(todo, c)
 			}
 		}
@@ -219,7 +222,7 @@ func (a *App) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 				if ctx.Err() != nil {
 					break
 				}
-			} else if err := a.store.SaveAnalyses(ctx, res); err != nil {
+			} else if err := a.store.SaveAnalyses(ctx, withBasis(res, st.Basis)); err != nil {
 				return err
 			}
 			progress(min(start+analyzeBatchSize, len(todo)), len(todo))
@@ -229,6 +232,14 @@ func (a *App) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	})
+}
+
+func withBasis(res map[string]store.Analysis, basis string) map[string]store.Analysis {
+	for id, an := range res {
+		an.Basis = basis
+		res[id] = an
+	}
+	return res
 }
 
 // warn records a non-fatal problem from a background job, shown on the next page load.
@@ -284,7 +295,9 @@ func (a *App) handleInterests(w http.ResponseWriter, r *http.Request) {
 	interests := r.FormValue("interests")
 	if err := a.store.SetInterests(r.Context(), interests); err != nil {
 		fail(w, http.StatusInternalServerError, "Couldn't save interests", err)
+		return
 	}
+	w.Header().Set("HX-Refresh", "true") // suggestions may now be outdated
 }
 
 func (a *App) handleHistory(w http.ResponseWriter, r *http.Request) {
@@ -306,7 +319,10 @@ func (a *App) handleHistory(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, title, err)
 		return
 	}
-	fmt.Fprintf(w, "Imported. You've watched %d of your subscribed channels. Run \"Re-analyze all\" to use it.", matched)
+	a.mu.Lock()
+	a.flash = fmt.Sprintf("Watch history imported: you've watched %d of your subscribed channels. Analyze new to update the suggestions.", matched)
+	a.mu.Unlock()
+	w.Header().Set("HX-Refresh", "true")
 }
 
 // ---- OAuth ----

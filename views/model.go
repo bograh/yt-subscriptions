@@ -31,12 +31,14 @@ type Page struct {
 	Job          Job
 	Error        string
 	Warning      string
+	Flash        string
 	Stats        Stats
 	List         List
 }
 
 type Stats struct {
 	Total, Keep, Review, Unsubscribe, Unanalyzed, Inactive, NeverWatched int
+	Outdated                                                             int
 	HistoryImported                                                      bool
 }
 
@@ -65,6 +67,9 @@ func ComputeStats(st store.State) Stats {
 			s.Unsubscribe++
 		default:
 			s.Review++
+		}
+		if c.Analysis != nil && c.Analysis.Outdated {
+			s.Outdated++
 		}
 		if c.Inactive() {
 			s.Inactive++
@@ -165,6 +170,9 @@ func (s Stats) Pct(n int) string {
 	}
 	return fmt.Sprintf("%.3f%%", float64(n)*100/float64(s.Total))
 }
+
+// Pending is how many channels "Analyze new" will send: never analyzed or outdated.
+func (s Stats) Pending() int { return s.Unanalyzed + s.Outdated }
 
 func (s Stats) Analyzed() int { return s.Keep + s.Review + s.Unsubscribe }
 

@@ -6,13 +6,16 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -31,6 +34,10 @@ type Analysis struct {
 	Verdict     string    `json:"verdict"`
 	Reason      string    `json:"reason"`
 	AnalyzedAt  time.Time `json:"analyzed_at"`
+	// Basis fingerprints the interests + watch history the AI saw (see State.Basis).
+	Basis string `json:"basis,omitempty"`
+	// Outdated is computed on read: the basis no longer matches the current one.
+	Outdated bool `json:"-"`
 }
 
 type Channel struct {
@@ -68,6 +75,14 @@ type State struct {
 	Interests       string
 	SyncedAt        time.Time
 	HistoryImported bool
+	// Basis fingerprints what personalises suggestions (interests + watch-history
+	// import). Analyses made under a different basis are marked Outdated.
+	Basis string
+}
+
+func analysisBasis(interests, historyImportedAt string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(interests) + "\x00" + historyImportedAt))
+	return hex.EncodeToString(sum[:6])
 }
 
 type WatchStat struct {
@@ -76,10 +91,11 @@ type WatchStat struct {
 }
 
 const (
-	keyInterests       = "interests"
-	keySyncedAt        = "synced_at"
-	keyHistoryImported = "history_imported"
-	keyOAuthToken      = "oauth_token"
+	keyInterests         = "interests"
+	keySyncedAt          = "synced_at"
+	keyHistoryImported   = "history_imported"
+	keyHistoryImportedAt = "history_imported_at"
+	keyOAuthToken        = "oauth_token"
 )
 
 type Store struct {
@@ -134,7 +150,7 @@ func (s *Store) Snapshot(ctx context.Context) (State, error) {
 		SELECT c.id, c.subscription_id, c.title, c.description, c.thumbnail, c.subscribed_at,
 		       c.subscriber_count, c.subscribers_hidden, c.video_count, c.topics, c.uploads_playlist, c.last_upload, c.recent_titles,
 		       COALESCE(w.count, 0), w.last_watched,
-		       a.category, a.content_type, a.verdict, a.reason, a.analyzed_at
+		       a.category, a.content_type, a.verdict, a.reason, a.analyzed_at, a.basis
 		FROM channels c
 		LEFT JOIN watch_stats w ON w.channel_id = c.id
 		LEFT JOIN analyses a    ON a.channel_id = c.id
@@ -149,12 +165,13 @@ func (s *Store) Snapshot(ctx context.Context) (State, error) {
 			subscribedAt, lastUpload, watched sql.NullInt64
 			topics, titles                    string
 			category, ctype, verdict, reason  sql.NullString
+			basis                             sql.NullString
 			analyzedAt                        sql.NullInt64
 		)
 		if err := rows.Scan(&c.ID, &c.SubscriptionID, &c.Title, &c.Description, &c.Thumbnail, &subscribedAt,
 			&c.SubscriberCount, &c.SubscribersHidden, &c.VideoCount, &topics, &c.UploadsPlaylist, &lastUpload, &titles,
 			&c.WatchCount, &watched,
-			&category, &ctype, &verdict, &reason, &analyzedAt); err != nil {
+			&category, &ctype, &verdict, &reason, &analyzedAt, &basis); err != nil {
 			return st, err
 		}
 		c.SubscribedAt, c.LastUpload, c.LastWatched = fromUnix(subscribedAt), fromUnix(lastUpload), fromUnix(watched)
@@ -163,7 +180,7 @@ func (s *Store) Snapshot(ctx context.Context) (State, error) {
 		if verdict.Valid {
 			c.Analysis = &Analysis{
 				Category: category.String, ContentType: ctype.String, Verdict: verdict.String,
-				Reason: reason.String, AnalyzedAt: fromUnix(analyzedAt),
+				Reason: reason.String, AnalyzedAt: fromUnix(analyzedAt), Basis: basis.String,
 			}
 		}
 		st.Channels = append(st.Channels, c)
@@ -178,6 +195,13 @@ func (s *Store) Snapshot(ctx context.Context) (State, error) {
 	}
 	st.Interests = settings[keyInterests]
 	st.HistoryImported = settings[keyHistoryImported] == "1"
+	st.Basis = analysisBasis(st.Interests, settings[keyHistoryImportedAt])
+	for i := range st.Channels {
+		// An empty basis predates tracking; don't flag those.
+		if a := st.Channels[i].Analysis; a != nil && a.Basis != "" && a.Basis != st.Basis {
+			a.Outdated = true
+		}
+	}
 	if v, err := strconv.ParseInt(settings[keySyncedAt], 10, 64); err == nil {
 		st.SyncedAt = time.Unix(v, 0)
 	}
@@ -222,13 +246,13 @@ func (s *Store) ReplaceChannels(ctx context.Context, channels []Channel) error {
 func (s *Store) SaveAnalyses(ctx context.Context, analyses map[string]Analysis) error {
 	return s.tx(ctx, func(tx *sql.Tx) error {
 		stmt, err := tx.Prepare(`INSERT OR REPLACE INTO analyses
-			(channel_id, category, content_type, verdict, reason, analyzed_at) VALUES (?, ?, ?, ?, ?, ?)`)
+			(channel_id, category, content_type, verdict, reason, analyzed_at, basis) VALUES (?, ?, ?, ?, ?, ?, ?)`)
 		if err != nil {
 			return err
 		}
 		defer stmt.Close()
 		for id, a := range analyses {
-			if _, err := stmt.Exec(id, a.Category, a.ContentType, a.Verdict, a.Reason, a.AnalyzedAt.Unix()); err != nil {
+			if _, err := stmt.Exec(id, a.Category, a.ContentType, a.Verdict, a.Reason, a.AnalyzedAt.Unix(), a.Basis); err != nil {
 				return err
 			}
 		}
@@ -264,6 +288,9 @@ func (s *Store) ImportWatchStats(ctx context.Context, stats map[string]WatchStat
 			}
 		}
 		if err := setSetting(tx, keyHistoryImported, "1"); err != nil {
+			return err
+		}
+		if err := setSetting(tx, keyHistoryImportedAt, strconv.FormatInt(time.Now().UnixNano(), 10)); err != nil {
 			return err
 		}
 		return tx.QueryRow(`SELECT COUNT(*) FROM channels c JOIN watch_stats w ON w.channel_id = c.id`).Scan(&matched)

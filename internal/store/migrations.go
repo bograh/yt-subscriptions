@@ -44,6 +44,9 @@ var migrations = []string{
 
 	// 2: channels that hide their subscriber count.
 	`ALTER TABLE channels ADD COLUMN subscribers_hidden INTEGER NOT NULL DEFAULT 0;`,
+
+	// 3: fingerprint of the interests + watch history each analysis was based on.
+	`ALTER TABLE analyses ADD COLUMN basis TEXT NOT NULL DEFAULT '';`,
 }
 
 func migrate(db *sql.DB) error {

@@ -49,8 +49,8 @@ templ Dashboard(p Page) {
 						<button hx-post="/sync" hx-target="#job" hx-swap="outerHTML" class="btn">Sync</button>
 						<button hx-post="/analyze" hx-target="#job" hx-swap="outerHTML" class="btn btn-primary" disabled?={ !p.AIConfigured || len(p.State.Channels) == 0 }>
 							Analyze new
-							if p.Stats.Unanalyzed > 0 {
-								<span class="font-mono text-xs tabular-nums opacity-70">{ fmt.Sprint(p.Stats.Unanalyzed) }</span>
+							if p.Stats.Pending() > 0 {
+								<span class="font-mono text-xs tabular-nums opacity-70">{ fmt.Sprint(p.Stats.Pending()) }</span>
 							}
 						</button>
 						<button hx-post="/analyze?all=1" hx-target="#job" hx-swap="outerHTML" hx-confirm="Send every channel to the AI again? This replaces the current suggestions." class="btn" disabled?={ !p.AIConfigured || len(p.State.Channels) == 0 }>Re-analyze all</button>
@@ -71,6 +71,9 @@ templ Dashboard(p Page) {
 					<p class="font-medium text-drop">Last job failed</p>
 					<p class="mt-0.5 text-ink-2">{ p.Error }</p>
 				</div>
+			}
+			if p.Flash != "" {
+				@notice("Done", p.Flash)
 			}
 			if p.Warning != "" {
 				@notice("Heads up", p.Warning)
@@ -150,9 +153,9 @@ templ settings(p Page) {
 					<button class="btn btn-sm">Save</button>
 					<span class="htmx-indicator text-sm text-muted">Saving…</span>
 				</div>
-				<p class="text-xs text-muted">The AI reads this on the next analysis.</p>
+				<p class="text-xs text-muted">Changing this marks existing suggestions as outdated; Analyze new refreshes them.</p>
 			</form>
-			<form hx-post="/history" hx-encoding="multipart/form-data" hx-target="#history-result" class="flex flex-col gap-2">
+			<form hx-post="/history" hx-encoding="multipart/form-data" hx-swap="none" class="flex flex-col gap-2">
 				<label for="history-file" class="text-sm font-medium">Watch history</label>
 				<p class="text-xs leading-relaxed text-muted">
 					YouTube's API can't see what you watch. Export it from
@@ -164,7 +167,7 @@ templ settings(p Page) {
 					<button class="btn btn-sm">Import</button>
 					<span class="htmx-indicator text-sm text-muted">Reading file…</span>
 				</div>
-				<p id="history-result" class="text-xs text-muted"></p>
+
 			</form>
 		</div>
 	</details>
@@ -214,6 +217,9 @@ templ Summary(s Stats, oob bool) {
 				@legend("bg-keep", "Keep", s.Keep)
 				if s.Unanalyzed > 0 {
 					@legend("bg-rule-strong", "Not analyzed", s.Unanalyzed)
+				}
+				if s.Outdated > 0 {
+					<li title="Your interests or watch history changed since these were analyzed">{ fmt.Sprint(s.Outdated) } outdated</li>
 				}
 				<li>{ fmt.Sprint(s.Inactive) } inactive > 1 year</li>
 				if s.HistoryImported {
@@ -279,6 +285,9 @@ templ ChannelRow(c store.Channel) {
 					<span class={ "size-2 shrink-0 rounded-[2px]", VerdictMark(c.Analysis.Verdict) } aria-hidden="true"></span>
 					<span class="font-medium">{ VerdictLabel(c.Analysis.Verdict) }</span>
 					<span class="text-muted">{ c.Analysis.Category } · { c.Analysis.ContentType }</span>
+					if c.Analysis.Outdated {
+						<span class="rounded-[3px] border border-rule-strong px-1.5 font-mono text-[0.6875rem] text-muted" title="Your interests or watch history changed since this was analyzed. Analyze new to refresh it.">outdated</span>
+					}
 				</p>
 				<p class="mt-1 text-sm leading-relaxed text-ink-2">{ c.Analysis.Reason }</p>
 			} else {
