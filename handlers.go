@@ -46,6 +46,8 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("GET /{$}", a.handleIndex)
 	mux.HandleFunc("GET /channels", a.handleChannels)
 	mux.HandleFunc("DELETE /channels/{id}", a.handleUnsubscribe)
+	mux.HandleFunc("POST /channels/{id}/keep", a.handleDecision(store.VerdictKeep))
+	mux.HandleFunc("DELETE /channels/{id}/keep", a.handleDecision(""))
 	mux.HandleFunc("GET /job", a.handleJob)
 	mux.HandleFunc("POST /sync", a.handleSync)
 	mux.HandleFunc("POST /analyze", a.handleAnalyze)
@@ -205,6 +207,9 @@ func (a *App) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		}
 		var todo []store.Channel
 		for _, c := range st.Channels {
+			if c.Decision != "" {
+				continue // the user already decided; don't spend AI calls on it
+			}
 			if all || c.Analysis == nil || c.Analysis.Outdated {
 				todo = append(todo, c)
 			}
@@ -289,6 +294,32 @@ func (a *App) handleUnsubscribe(w http.ResponseWriter, r *http.Request) {
 	}
 	// Empty body removes the card; stats are refreshed out-of-band.
 	render(w, r, views.Summary(views.ComputeStats(st), true))
+}
+
+// handleDecision pins (or, with "", clears) the user's own verdict for a channel
+// and re-renders its row plus the summary.
+func (a *App) handleDecision(verdict string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		const title = "Couldn't save your decision"
+		id := r.PathValue("id")
+		if err := a.store.SetDecision(r.Context(), id, verdict); err != nil {
+			fail(w, http.StatusInternalServerError, title, err)
+			return
+		}
+		st, err := a.store.Snapshot(r.Context())
+		if err != nil {
+			fail(w, http.StatusInternalServerError, title, err)
+			return
+		}
+		for _, c := range st.Channels {
+			if c.ID == id {
+				render(w, r, views.ChannelRow(c))
+				render(w, r, views.Summary(views.ComputeStats(st), true))
+				return
+			}
+		}
+		fail(w, http.StatusNotFound, title, errors.New("that channel isn't in your synced subscriptions"))
+	}
 }
 
 func (a *App) handleInterests(w http.ResponseWriter, r *http.Request) {

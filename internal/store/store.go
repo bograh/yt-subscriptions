@@ -61,6 +61,19 @@ type Channel struct {
 	LastWatched time.Time `json:"last_watched"`
 
 	Analysis *Analysis `json:"analysis,omitempty"`
+	// Decision is the user's own verdict ("" if none). It wins over the AI's.
+	Decision string `json:"decision,omitempty"`
+}
+
+// Verdict is the effective verdict: the user's decision if any, else the AI's, else "".
+func (c Channel) Verdict() string {
+	if c.Decision != "" {
+		return c.Decision
+	}
+	if c.Analysis != nil {
+		return c.Analysis.Verdict
+	}
+	return ""
 }
 
 func (c Channel) URL() string { return "https://www.youtube.com/channel/" + c.ID }
@@ -150,10 +163,12 @@ func (s *Store) Snapshot(ctx context.Context) (State, error) {
 		SELECT c.id, c.subscription_id, c.title, c.description, c.thumbnail, c.subscribed_at,
 		       c.subscriber_count, c.subscribers_hidden, c.video_count, c.topics, c.uploads_playlist, c.last_upload, c.recent_titles,
 		       COALESCE(w.count, 0), w.last_watched,
-		       a.category, a.content_type, a.verdict, a.reason, a.analyzed_at, a.basis
+		       a.category, a.content_type, a.verdict, a.reason, a.analyzed_at, a.basis,
+		       COALESCE(d.verdict, '')
 		FROM channels c
 		LEFT JOIN watch_stats w ON w.channel_id = c.id
 		LEFT JOIN analyses a    ON a.channel_id = c.id
+		LEFT JOIN decisions d   ON d.channel_id = c.id
 		ORDER BY c.title COLLATE NOCASE`)
 	if err != nil {
 		return st, err
@@ -171,7 +186,8 @@ func (s *Store) Snapshot(ctx context.Context) (State, error) {
 		if err := rows.Scan(&c.ID, &c.SubscriptionID, &c.Title, &c.Description, &c.Thumbnail, &subscribedAt,
 			&c.SubscriberCount, &c.SubscribersHidden, &c.VideoCount, &topics, &c.UploadsPlaylist, &lastUpload, &titles,
 			&c.WatchCount, &watched,
-			&category, &ctype, &verdict, &reason, &analyzedAt, &basis); err != nil {
+			&category, &ctype, &verdict, &reason, &analyzedAt, &basis,
+			&c.Decision); err != nil {
 			return st, err
 		}
 		c.SubscribedAt, c.LastUpload, c.LastWatched = fromUnix(subscribedAt), fromUnix(lastUpload), fromUnix(watched)
@@ -258,6 +274,19 @@ func (s *Store) SaveAnalyses(ctx context.Context, analyses map[string]Analysis) 
 		}
 		return nil
 	})
+}
+
+// SetDecision records the user's own verdict for a channel; "" clears it.
+// Decisions are kept by channel ID, so they survive re-syncs and re-subscribing.
+func (s *Store) SetDecision(ctx context.Context, channelID, verdict string) error {
+	if verdict == "" {
+		_, err := s.db.ExecContext(ctx, `DELETE FROM decisions WHERE channel_id = ?`, channelID)
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO decisions (channel_id, verdict, decided_at) VALUES (?, ?, ?)
+		ON CONFLICT(channel_id) DO UPDATE SET verdict = excluded.verdict, decided_at = excluded.decided_at`,
+		channelID, verdict, time.Now().Unix())
+	return err
 }
 
 // DeleteChannel removes a channel from the subscription list after unsubscribing.

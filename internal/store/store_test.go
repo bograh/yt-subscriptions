@@ -174,3 +174,27 @@ func TestAnalysesGoOutdatedWhenBasisChanges(t *testing.T) {
 		t.Fatal("importing watch history should outdate UC1")
 	}
 }
+
+func TestDecisionsOverrideAndSurviveResync(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	chs := []Channel{{ID: "UC1", SubscriptionID: "s1", Title: "A"}}
+	s.ReplaceChannels(ctx, chs)
+	s.SaveAnalyses(ctx, map[string]Analysis{"UC1": {Verdict: VerdictUnsubscribe, AnalyzedAt: time.Now()}})
+	if err := s.SetDecision(ctx, "UC1", VerdictKeep); err != nil {
+		t.Fatal(err)
+	}
+	s.ReplaceChannels(ctx, chs)
+	st, _ := s.Snapshot(ctx)
+	if c := st.Channels[0]; c.Verdict() != VerdictKeep || c.Analysis.Verdict != VerdictUnsubscribe {
+		t.Fatalf("decision should win over the AI and survive a sync: %+v", c)
+	}
+	s.SetDecision(ctx, "UC1", "")
+	st, _ = s.Snapshot(ctx)
+	if st.Channels[0].Verdict() != VerdictUnsubscribe {
+		t.Fatal("clearing the decision should fall back to the AI verdict")
+	}
+}

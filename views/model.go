@@ -58,17 +58,17 @@ type List struct {
 func ComputeStats(st store.State) Stats {
 	s := Stats{Total: len(st.Channels), HistoryImported: st.HistoryImported}
 	for _, c := range st.Channels {
-		switch {
-		case c.Analysis == nil:
+		switch c.Verdict() {
+		case "":
 			s.Unanalyzed++
-		case c.Analysis.Verdict == store.VerdictKeep:
+		case store.VerdictKeep:
 			s.Keep++
-		case c.Analysis.Verdict == store.VerdictUnsubscribe:
+		case store.VerdictUnsubscribe:
 			s.Unsubscribe++
 		default:
 			s.Review++
 		}
-		if c.Analysis != nil && c.Analysis.Outdated {
+		if c.Decision == "" && c.Analysis != nil && c.Analysis.Outdated {
 			s.Outdated++
 		}
 		if c.Inactive() {
@@ -92,21 +92,23 @@ func BuildList(channels []store.Channel, groupBy, verdict, query string) List {
 	groups := map[string][]store.Channel{}
 	for _, c := range channels {
 		v := verdictOf(c)
-		if verdict != "" && v != verdict && !(verdict == "unanalyzed" && c.Analysis == nil) {
+		if verdict != "" && v != verdict && !(verdict == "unanalyzed" && v == "") {
 			continue
 		}
 		if q != "" && !strings.Contains(strings.ToLower(c.Title+" "+c.Description), q) {
 			continue
 		}
 		key := "Not analyzed yet"
-		if c.Analysis != nil {
+		if groupBy == "verdict" && v != "" {
+			key = VerdictLabel(v)
+		} else if c.Analysis != nil {
 			switch groupBy {
 			case "category":
 				key = c.Analysis.Category
 			case "type":
 				key = c.Analysis.ContentType
 			case "verdict":
-				key = VerdictLabel(c.Analysis.Verdict)
+				key = VerdictLabel(v)
 			}
 		}
 		groups[key] = append(groups[key], c)
@@ -131,12 +133,7 @@ func BuildList(channels []store.Channel, groupBy, verdict, query string) List {
 	return l
 }
 
-func verdictOf(c store.Channel) string {
-	if c.Analysis == nil {
-		return ""
-	}
-	return c.Analysis.Verdict
-}
+func verdictOf(c store.Channel) string { return c.Verdict() }
 
 func VerdictLabel(v string) string {
 	switch v {

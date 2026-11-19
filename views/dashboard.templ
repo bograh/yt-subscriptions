@@ -280,7 +280,16 @@ templ ChannelRow(c store.Channel) {
 			}
 		</div>
 		<div class="col-start-2 min-w-0 md:col-start-auto">
-			if c.Analysis != nil {
+			if c.Decision != "" {
+				<p class="flex flex-wrap items-center gap-x-2 text-sm">
+					<span class={ "size-2 shrink-0 rounded-[2px]", VerdictMark(c.Decision) } aria-hidden="true"></span>
+					<span class="font-medium">{ VerdictLabel(c.Decision) }</span>
+					<span class="text-muted">your call</span>
+				</p>
+				if c.Analysis != nil && c.Analysis.Verdict != c.Decision {
+					<p class="mt-1 text-sm leading-relaxed text-muted">AI suggested { VerdictLabel(c.Analysis.Verdict) }: { c.Analysis.Reason }</p>
+				}
+			} else if c.Analysis != nil {
 				<p class="flex flex-wrap items-center gap-x-2 text-sm">
 					<span class={ "size-2 shrink-0 rounded-[2px]", VerdictMark(c.Analysis.Verdict) } aria-hidden="true"></span>
 					<span class="font-medium">{ VerdictLabel(c.Analysis.Verdict) }</span>
@@ -295,6 +304,11 @@ templ ChannelRow(c store.Channel) {
 			}
 		</div>
 		<div class="col-start-2 flex gap-2 md:col-start-auto md:justify-end">
+			if c.Decision != "" {
+				<button hx-delete={ "/channels/" + c.ID + "/keep" } hx-target={ "#ch-" + c.ID } hx-swap="outerHTML" class="btn btn-sm">Undo</button>
+			} else if c.Verdict() != store.VerdictKeep {
+				<button hx-post={ "/channels/" + c.ID + "/keep" } hx-target={ "#ch-" + c.ID } hx-swap="outerHTML" class="btn btn-sm" title="Keep this channel. Re-analysis won't change it.">Keep</button>
+			}
 			<button
 				hx-delete={ "/channels/" + c.ID }
 				hx-target={ "#ch-" + c.ID }

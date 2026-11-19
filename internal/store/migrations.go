@@ -47,6 +47,13 @@ var migrations = []string{
 
 	// 3: fingerprint of the interests + watch history each analysis was based on.
 	`ALTER TABLE analyses ADD COLUMN basis TEXT NOT NULL DEFAULT '';`,
+
+	// 4: the user's own decisions, which override the AI's verdict.
+	`CREATE TABLE decisions (
+		channel_id TEXT PRIMARY KEY,
+		verdict    TEXT NOT NULL,
+		decided_at INTEGER NOT NULL
+	);`,
 }
 
 func migrate(db *sql.DB) error {
