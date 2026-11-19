@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"errors"
@@ -31,7 +31,7 @@ func TestInvalidGrantForgetsToken(t *testing.T) {
 	if err := st.SaveToken(expired); err != nil {
 		t.Fatal(err)
 	}
-	a := &App{store: st, oauth: &oauth2.Config{Endpoint: oauth2.Endpoint{TokenURL: tokenSrv.URL}}}
+	a := New(Options{Store: st, OAuth: &oauth2.Config{Endpoint: oauth2.Endpoint{TokenURL: tokenSrv.URL}}})
 
 	yt, err := a.youtube()
 	if err != nil {
@@ -52,7 +52,7 @@ func TestCheckAuthDropsTokenOn401(t *testing.T) {
 		t.Fatal(err)
 	}
 	st.SaveToken(&oauth2.Token{AccessToken: "a"})
-	a := &App{store: st}
+	a := New(Options{Store: st})
 
 	if err := a.checkAuth(&youtube.APIError{Status: 403, Reason: "quotaExceeded"}); errors.Is(err, ErrReconnect) {
 		t.Fatal("quota errors must not disconnect")

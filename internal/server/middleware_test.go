@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"context"
@@ -39,21 +39,19 @@ func TestHealthzSkipsAuthAndReportsDB(t *testing.T) {
 	}
 }
 
-func TestCheckExposure(t *testing.T) {
-	cases := []struct {
-		host, password string
-		allow, ok      bool
-	}{
-		{"127.0.0.1", "", false, true},
-		{"localhost", "", false, true},
-		{"::1", "", false, true},
-		{"0.0.0.0", "", false, false},
-		{"0.0.0.0", "secret", false, true},
-		{"0.0.0.0", "", true, true},
-	}
-	for _, c := range cases {
-		if err := checkExposure(c.host, c.password, c.allow); (err == nil) != c.ok {
-			t.Errorf("checkExposure(%q, %q, %v) = %v", c.host, c.password, c.allow, err)
+// The full handler serves the dashboard, both pages and the embedded assets.
+func TestHandlerServesPagesAndAssets(t *testing.T) {
+	h := newTestServer(t, nil).Handler()
+	for _, path := range []string{"/", "/playlists", "/static/app.css", "/static/htmx.min.js", "/static/fonts/Geist-Variable.woff2"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK || rec.Body.Len() == 0 {
+			t.Errorf("GET %s: %d, %d bytes", path, rec.Code, rec.Body.Len())
 		}
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/static/static.go", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("Go source must not be served: %d", rec.Code)
 	}
 }

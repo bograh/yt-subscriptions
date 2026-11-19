@@ -1,12 +1,13 @@
-package main
+package server
 
 import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
-	"net"
 	"net/http"
 	"time"
+
+	"yt-subscriptions/static"
 )
 
 // secure wraps the app with cross-origin (CSRF) protection and, when a password
@@ -73,10 +74,12 @@ func withHealth(h http.Handler, db pinger) http.Handler {
 	})
 }
 
-func isLoopback(host string) bool {
-	if host == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+// staticHandler serves the embedded assets under /static/. They aren't
+// fingerprinted, so browsers revalidate them on each load.
+func staticHandler() http.Handler {
+	fs := http.StripPrefix("/static/", http.FileServerFS(static.FS))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		fs.ServeHTTP(w, r)
+	})
 }

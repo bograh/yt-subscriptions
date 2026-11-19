@@ -4,45 +4,17 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	"yt-subscriptions/internal/store"
+	"yt-subscriptions/internal/youtube"
 )
 
-type Job struct {
-	Running bool
-	Label   string
-	Done    int
-	Total   int
-}
-
-func (j Job) Percent() int {
-	if j.Total == 0 {
-		return 0
-	}
-	return j.Done * 100 / j.Total
-}
-
-// HeaderData drives the shared page header.
-type HeaderData struct {
-	Active     string // "subscriptions" | "playlists"
-	SyncedAt   time.Time
-	Connected  bool
-	OAuthReady bool
-	Job        Job
-}
-
+// Page is the Subscriptions dashboard.
 type Page struct {
-	State        store.State
-	Connected    bool
-	OAuthReady   bool
-	AIConfigured bool
-	Job          Job
-	Error        string
-	Warning      string
-	Flash        string
-	Stats        Stats
-	List         List
+	Status
+	State store.State
+	Stats Stats
+	List  List
 }
 
 type Stats struct {
@@ -146,42 +118,6 @@ func BuildList(channels []store.Channel, groupBy, verdict, query string) List {
 	return l
 }
 
-// naturalLess compares case-insensitively with digit runs as numbers,
-// so "Channel 3" sorts before "Channel 15".
-func naturalLess(a, b string) bool {
-	a, b = strings.ToLower(a), strings.ToLower(b)
-	for a != "" && b != "" {
-		if isDigit(a[0]) && isDigit(b[0]) {
-			na, ra := digitRun(a)
-			nb, rb := digitRun(b)
-			ta, tb := strings.TrimLeft(na, "0"), strings.TrimLeft(nb, "0")
-			if len(ta) != len(tb) {
-				return len(ta) < len(tb)
-			}
-			if ta != tb {
-				return ta < tb
-			}
-			a, b = ra, rb
-			continue
-		}
-		if a[0] != b[0] {
-			return a[0] < b[0]
-		}
-		a, b = a[1:], b[1:]
-	}
-	return len(a) < len(b)
-}
-
-func isDigit(c byte) bool { return c >= '0' && c <= '9' }
-
-func digitRun(s string) (run, rest string) {
-	i := 0
-	for i < len(s) && isDigit(s[i]) {
-		i++
-	}
-	return s[:i], s[i:]
-}
-
 func verdictOf(c store.Channel) string { return c.Verdict() }
 
 func VerdictLabel(v string) string {
@@ -220,47 +156,15 @@ func (s Stats) Pct(n int) string {
 func (s Stats) QuotaRemaining() int { return max(0, s.QuotaLimit-s.QuotaUsed) }
 
 // BulkCost is the quota a bulk unsubscribe of every suggested channel would use.
-func (s Stats) BulkCost() int { return s.Unsubscribe * 50 }
+func (s Stats) BulkCost() int { return s.Unsubscribe * youtube.CostUnsubscribe }
 
 // BulkNote explains the cost of "Unsubscribe from all".
 func (s Stats) BulkNote() string {
-	note := "Review the list first. Each unsubscribe costs 50 quota units"
+	note := "Review the list first. Each unsubscribe costs " + fmt.Sprint(youtube.CostUnsubscribe) + " quota units"
 	if s.BulkCost() > s.QuotaRemaining() {
-		return fmt.Sprintf("%s, so today's quota covers %d of them.", note, s.QuotaRemaining()/50)
+		return fmt.Sprintf("%s, so today's quota covers %d of them.", note, s.QuotaRemaining()/youtube.CostUnsubscribe)
 	}
 	return note + "."
-}
-
-// SentencePart is one clause of the summary sentence; Accent marks the
-// destructive suggestion, shown in the accent colour.
-type SentencePart struct {
-	Text   string
-	Accent bool
-}
-
-// sentence builds "Unsubscribe from 3, review 2, keep 5." leaving out zero counts.
-func sentence(parts ...SentencePart) []SentencePart {
-	var out []SentencePart
-	for _, p := range parts {
-		if p.Text != "" {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
-func punct(i, n int) string {
-	if i == n-1 {
-		return "."
-	}
-	return ","
-}
-
-func clause(n int, format string, accent bool) SentencePart {
-	if n == 0 {
-		return SentencePart{}
-	}
-	return SentencePart{Text: fmt.Sprintf(format, n), Accent: accent}
 }
 
 func (s Stats) Sentence() []SentencePart {
@@ -275,43 +179,3 @@ func (s Stats) Sentence() []SentencePart {
 func (s Stats) Pending() int { return s.Unanalyzed + s.Outdated }
 
 func (s Stats) Analyzed() int { return s.Keep + s.Review + s.Unsubscribe }
-
-func Compact(n int64) string {
-	switch {
-	case n >= 1_000_000:
-		return trimZero(fmt.Sprintf("%.1f", float64(n)/1_000_000)) + "M"
-	case n >= 1_000:
-		return trimZero(fmt.Sprintf("%.1f", float64(n)/1_000)) + "K"
-	}
-	return fmt.Sprint(n)
-}
-
-// Thousands formats n with comma separators: 10000 -> "10,000".
-func Thousands(n int) string {
-	str := fmt.Sprint(n)
-	if n < 0 {
-		return "-" + Thousands(-n)
-	}
-	for i := len(str) - 3; i > 0; i -= 3 {
-		str = str[:i] + "," + str[i:]
-	}
-	return str
-}
-
-func trimZero(s string) string { return strings.TrimSuffix(s, ".0") }
-
-func Ago(t time.Time) string {
-	if t.IsZero() {
-		return "unknown"
-	}
-	d := time.Since(t)
-	switch {
-	case d < 48*time.Hour:
-		return "today"
-	case d < 60*24*time.Hour:
-		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
-	case d < 365*24*time.Hour:
-		return fmt.Sprintf("%dmo ago", int(d.Hours()/24/30))
-	}
-	return fmt.Sprintf("%.1fy ago", d.Hours()/24/365)
-}

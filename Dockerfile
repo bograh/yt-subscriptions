@@ -1,6 +1,5 @@
 # syntax=docker/dockerfile:1.7
 
-# ---- build ---------------------------------------------------------------
 # Runs on the build machine's architecture and cross-compiles (pure Go, no cgo),
 # so multi-arch images build fast without emulation.
 ARG GO_VERSION=1.27
@@ -18,16 +17,16 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     go tool templ generate \
  && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/yt-subscriptions . \
+    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/yt-subscriptions ./cmd/yt-subscriptions \
  && mkdir -p /out/data
 
-# ---- runtime -------------------------------------------------------------
 # Distroless static: CA certificates and a nonroot user, no shell or package manager.
 FROM gcr.io/distroless/static-debian12:nonroot
 ARG VERSION=dev
+# The release workflow adds org.opencontainers.image.source for whichever
+# repository (or fork) builds the image.
 LABEL org.opencontainers.image.title="yt-subscriptions" \
-      org.opencontainers.image.description="Review your YouTube subscriptions with AI suggestions" \
-      org.opencontainers.image.source="https://github.com/bograh/yt-subscriptions" \
+      org.opencontainers.image.description="Review your YouTube subscriptions and playlists with AI suggestions" \
       org.opencontainers.image.version="${VERSION}"
 
 COPY --from=build /out/yt-subscriptions /app/yt-subscriptions

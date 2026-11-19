@@ -3,6 +3,7 @@ package views
 import (
 	"fmt"
 	"yt-subscriptions/internal/store"
+	"yt-subscriptions/internal/youtube"
 )
 
 templ PlaylistsPage(p PlaylistPage) {
@@ -101,7 +102,7 @@ templ PlaylistSummary(s PlaylistStats, oob bool) {
 						hx-post="/playlists/clean-all"
 						hx-target="#job"
 						hx-swap="outerHTML"
-						hx-confirm={ fmt.Sprintf("Remove %d unavailable videos and duplicates from your playlists? This uses about %s of your %s remaining quota units.", s.Cleanable(), Thousands(s.Cleanable()*50), Thousands(s.QuotaRemaining())) }
+						hx-confirm={ fmt.Sprintf("Remove %d unavailable videos and duplicates from your playlists? This uses about %s of your %s remaining quota units.", s.Cleanable(), Thousands(s.Cleanable()*youtube.CostWrite), Thousands(s.QuotaRemaining())) }
 						class="btn"
 					>Clean up all playlists</button>
 					<p class="text-sm text-muted">{ s.CleanAllNote() }</p>
@@ -196,7 +197,7 @@ templ PlaylistRow(p store.Playlist, l PlaylistList) {
 					hx-post={ "/playlists/" + p.ID + "/clean" }
 					hx-target="#job"
 					hx-swap="outerHTML"
-					hx-confirm={ fmt.Sprintf("Remove %d unavailable or duplicate videos from %s? About %s quota units.", n, p.Title, Thousands(n*50)) }
+					hx-confirm={ fmt.Sprintf("Remove %d unavailable or duplicate videos from %s? About %s quota units.", n, p.Title, Thousands(n*youtube.CostWrite)) }
 					class="btn btn-sm"
 				>Clean up</button>
 			}
@@ -205,7 +206,7 @@ templ PlaylistRow(p store.Playlist, l PlaylistList) {
 					hx-post={ "/playlists/" + p.ID + "/merge" }
 					hx-target="#job"
 					hx-swap="outerHTML"
-					hx-confirm={ fmt.Sprintf("Copy %d videos from %s into %s, then delete %s? About %s quota units.", MergeMoves(p, t), p.Title, t.Title, p.Title, Thousands(MergeMoves(p, t)*50+50)) }
+					hx-confirm={ fmt.Sprintf("Copy %d videos from %s into %s, then delete %s? About %s quota units.", MergeMoves(p, t), p.Title, t.Title, p.Title, Thousands((MergeMoves(p, t)+1)*youtube.CostWrite)) }
 					class="btn btn-sm"
 				>Merge</button>
 			}
