@@ -144,17 +144,28 @@ func VerdictLabel(v string) string {
 	return "Not analyzed"
 }
 
-func VerdictClass(v string) string {
+// VerdictMark is the Tailwind background class for a verdict's square marker.
+func VerdictMark(v string) string {
 	switch v {
 	case store.VerdictKeep:
-		return "bg-emerald-500/15 text-emerald-300 ring-emerald-500/30"
+		return "bg-keep"
 	case store.VerdictUnsubscribe:
-		return "bg-rose-500/15 text-rose-300 ring-rose-500/30"
+		return "bg-drop"
 	case store.VerdictReview:
-		return "bg-amber-500/15 text-amber-300 ring-amber-500/30"
+		return "bg-review"
 	}
-	return "bg-zinc-500/15 text-zinc-400 ring-zinc-500/30"
+	return "bg-rule-strong"
 }
+
+// Pct is n as a percentage of all subscriptions, for the summary bar widths.
+func (s Stats) Pct(n int) string {
+	if s.Total == 0 {
+		return "0%"
+	}
+	return fmt.Sprintf("%.3f%%", float64(n)*100/float64(s.Total))
+}
+
+func (s Stats) Analyzed() int { return s.Keep + s.Review + s.Unsubscribe }
 
 func Compact(n int64) string {
 	switch {

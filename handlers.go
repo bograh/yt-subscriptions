@@ -235,7 +235,7 @@ func (a *App) handleUnsubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Empty body removes the card; stats are refreshed out-of-band.
-	render(w, r, views.StatsBar(views.ComputeStats(st), true))
+	render(w, r, views.Summary(views.ComputeStats(st), true))
 }
 
 func (a *App) handleInterests(w http.ResponseWriter, r *http.Request) {

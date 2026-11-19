@@ -7,59 +7,67 @@ import (
 
 templ layout() {
 	<!DOCTYPE html>
-	<html lang="en" class="dark">
+	<html lang="en" class="bg-paper">
 		<head>
 			<meta charset="utf-8"/>
 			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<meta name="color-scheme" content="light dark"/>
 			<title>Subscription Cleanup</title>
 			<link rel="stylesheet" href="/static/app.css"/>
 			<script src="/static/htmx.min.js" defer></script>
-			<style>
-				.htmx-request .htmx-indicator { display: inline-block; }
-				.htmx-indicator { display: none; }
-			</style>
 		</head>
-		<body class="min-h-screen bg-zinc-950 text-zinc-200 antialiased">
+		<body class="bg-paper font-sans text-ink antialiased">
 			{ children... }
+			<div id="toasts" class="pointer-events-none fixed inset-x-4 bottom-4 z-50 flex flex-col gap-2 sm:left-auto sm:w-96" aria-live="polite"></div>
 		</body>
 	</html>
 }
 
 templ Dashboard(p Page) {
 	@layout() {
-		<main class="mx-auto max-w-7xl px-4 py-8 sm:px-6">
-			<header class="flex flex-wrap items-center justify-between gap-4">
-				<div>
-					<h1 class="text-2xl font-semibold tracking-tight text-white">Subscription Cleanup</h1>
-					<p class="text-sm text-zinc-400">
+		<header class="border-b border-rule">
+			<div class="mx-auto flex max-w-6xl flex-wrap items-center gap-x-6 gap-y-3 px-4 py-4 sm:px-8">
+				<div class="mr-auto min-w-0">
+					<h1 class="text-[1.0625rem] font-semibold tracking-[-0.01em]">Subscription Cleanup</h1>
+					<p class="text-sm text-muted">
 						if p.State.SyncedAt.IsZero() {
 							Not synced yet
 						} else {
-							Last synced { Ago(p.State.SyncedAt) }
+							Synced { Ago(p.State.SyncedAt) }
 						}
 					</p>
 				</div>
 				<div class="flex flex-wrap gap-2">
 					if !p.Connected {
-						<a href="/auth/login" class="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-500">Connect YouTube</a>
+						<a href="/auth/login" class="btn btn-primary" aria-disabled?={ !p.OAuthReady }>Connect YouTube</a>
 					} else {
-						<button hx-post="/sync" hx-target="#job" hx-swap="outerHTML" class="rounded-lg bg-zinc-800 px-4 py-2 text-sm font-medium hover:bg-zinc-700">Sync subscriptions</button>
-						<button hx-post="/analyze" hx-target="#job" hx-swap="outerHTML" class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50" disabled?={ !p.AIConfigured || len(p.State.Channels) == 0 }>Analyze new</button>
-						<button hx-post="/analyze?all=1" hx-target="#job" hx-swap="outerHTML" hx-confirm="Re-run the AI on every channel?" class="rounded-lg bg-zinc-800 px-4 py-2 text-sm font-medium hover:bg-zinc-700 disabled:opacity-50" disabled?={ !p.AIConfigured || len(p.State.Channels) == 0 }>Re-analyze all</button>
+						<button hx-post="/sync" hx-target="#job" hx-swap="outerHTML" class="btn">Sync</button>
+						<button hx-post="/analyze" hx-target="#job" hx-swap="outerHTML" class="btn btn-primary" disabled?={ !p.AIConfigured || len(p.State.Channels) == 0 }>
+							Analyze new
+							if p.Stats.Unanalyzed > 0 {
+								<span class="font-mono text-xs tabular-nums opacity-70">{ fmt.Sprint(p.Stats.Unanalyzed) }</span>
+							}
+						</button>
+						<button hx-post="/analyze?all=1" hx-target="#job" hx-swap="outerHTML" hx-confirm="Send every channel to the AI again? This replaces the current suggestions." class="btn" disabled?={ !p.AIConfigured || len(p.State.Channels) == 0 }>Re-analyze all</button>
 					}
 				</div>
-			</header>
+			</div>
+			@JobBanner(p.Job)
+		</header>
+		<main class="mx-auto max-w-6xl px-4 pb-24 sm:px-8">
 			if !p.OAuthReady {
-				@notice("Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in .env to connect your YouTube account. See README.md.")
+				@notice("YouTube isn't configured", "Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in .env, then restart. The README walks through creating the OAuth client.")
 			}
 			if !p.AIConfigured {
-				@notice("Set AI_BASE_URL and AI_MODEL (and AI_API_KEY if needed) in .env to enable analysis.")
+				@notice("No AI model configured", "Set AI_MODEL, plus AI_BASE_URL and AI_API_KEY for your provider, in .env to get suggestions.")
 			}
 			if p.Error != "" {
-				<div class="mt-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{ p.Error }</div>
+				<div class="mt-6 rounded-(--radius-control) border border-drop px-4 py-3 text-sm" role="alert">
+					<p class="font-medium text-drop">Last job failed</p>
+					<p class="mt-0.5 text-ink-2">{ p.Error }</p>
+				</div>
 			}
-			@JobBanner(p.Job)
-			@StatsBar(p.Stats, false)
+			@Summary(p.Stats, false)
 			@settings(p)
 			<form
 				id="filters"
@@ -68,35 +76,44 @@ templ Dashboard(p Page) {
 				hx-swap="outerHTML"
 				hx-push-url="true"
 				hx-trigger="change, input from:#q delay:300ms"
-				class="mt-8 flex flex-wrap items-center gap-3"
+				class="sticky top-0 z-10 -mx-4 mt-8 flex flex-wrap items-center gap-x-4 gap-y-3 border-y border-rule bg-paper px-4 py-3 sm:-mx-8 sm:px-8"
 			>
-				<div class="inline-flex rounded-lg bg-zinc-900 p-1 ring-1 ring-zinc-800">
+				<fieldset class="flex items-center gap-1">
+					<legend class="sr-only">Group by</legend>
+					<span class="mr-2 text-sm text-muted">Group by</span>
 					@groupOption("category", "Category", p.List.GroupBy)
 					@groupOption("type", "Kind of videos", p.List.GroupBy)
 					@groupOption("verdict", "Suggestion", p.List.GroupBy)
+				</fieldset>
+				<div class="flex min-w-0 flex-1 flex-wrap items-center gap-3 sm:justify-end">
+					<label class="sr-only" for="verdict">Show</label>
+					<select id="verdict" name="verdict" class="field pr-8">
+						@verdictOption("", "All suggestions", p.List.Verdict)
+						@verdictOption("unsubscribe", "Unsubscribe", p.List.Verdict)
+						@verdictOption("review", "Review", p.List.Verdict)
+						@verdictOption("keep", "Keep", p.List.Verdict)
+						@verdictOption("unanalyzed", "Not analyzed", p.List.Verdict)
+					</select>
+					<label class="sr-only" for="q">Search channels</label>
+					<input id="q" type="search" name="q" value={ p.List.Query } placeholder="Search channels" class="field w-full min-w-0 sm:w-64"/>
 				</div>
-				<select name="verdict" class="rounded-lg bg-zinc-900 px-3 py-2 text-sm ring-1 ring-zinc-800">
-					@verdictOption("", "All suggestions", p.List.Verdict)
-					@verdictOption("unsubscribe", "Unsubscribe", p.List.Verdict)
-					@verdictOption("review", "Review", p.List.Verdict)
-					@verdictOption("keep", "Keep", p.List.Verdict)
-					@verdictOption("unanalyzed", "Not analyzed", p.List.Verdict)
-				</select>
-				<input id="q" type="search" name="q" value={ p.List.Query } placeholder="Search channels…" class="min-w-56 flex-1 rounded-lg bg-zinc-900 px-3 py-2 text-sm ring-1 ring-zinc-800 placeholder:text-zinc-500"/>
 			</form>
 			@ChannelList(p.List)
 		</main>
 	}
 }
 
-templ notice(msg string) {
-	<div class="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">{ msg }</div>
+templ notice(title, body string) {
+	<div class="mt-6 rounded-(--radius-control) border border-rule-strong bg-paper-2 px-4 py-3 text-sm">
+		<p class="font-medium">{ title }</p>
+		<p class="mt-0.5 text-ink-2">{ body }</p>
+	</div>
 }
 
 templ groupOption(value, label, current string) {
 	<label class="cursor-pointer">
 		<input type="radio" name="group" value={ value } class="peer sr-only" checked?={ value == current }/>
-		<span class="block rounded-md px-3 py-1.5 text-sm text-zinc-400 peer-checked:bg-zinc-700 peer-checked:text-white">{ label }</span>
+		<span class="block rounded-(--radius-control) px-2.5 py-1.5 text-sm whitespace-nowrap text-muted transition-colors peer-checked:bg-ink peer-checked:text-paper peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-focus hover:text-ink peer-checked:hover:text-paper">{ label }</span>
 	</label>
 }
 
@@ -105,31 +122,41 @@ templ verdictOption(value, label, current string) {
 }
 
 templ settings(p Page) {
-	<details class="mt-6 rounded-xl bg-zinc-900/60 ring-1 ring-zinc-800">
-		<summary class="cursor-pointer px-4 py-3 text-sm font-medium text-zinc-300">Personalize the suggestions</summary>
-		<div class="grid gap-6 border-t border-zinc-800 p-4 md:grid-cols-2">
-			<form hx-post="/interests" hx-swap="none" class="space-y-2">
-				<label for="interests" class="block text-sm font-medium">What are you into these days?</label>
-				<textarea id="interests" name="interests" rows="4" placeholder="e.g. Go & backend engineering, system design, football highlights, cooking. Not interested in gaming or celebrity drama anymore." class="w-full rounded-lg bg-zinc-950 p-3 text-sm ring-1 ring-zinc-800 placeholder:text-zinc-600">{ p.State.Interests }</textarea>
-				<button class="rounded-lg bg-zinc-800 px-3 py-1.5 text-sm hover:bg-zinc-700">
-					Save <span class="htmx-indicator">…</span>
-				</button>
-				<p class="text-xs text-zinc-500">Used by the AI on the next analysis. Run "Re-analyze all" after changing it.</p>
-			</form>
-			<form hx-post="/history" hx-encoding="multipart/form-data" hx-target="#history-result" class="space-y-2">
-				<label class="block text-sm font-medium">Watch history (optional, recommended)</label>
-				<p class="text-xs text-zinc-500">
-					Export from
-					<a href="https://takeout.google.com/" target="_blank" class="text-indigo-400 underline">Google Takeout</a>
-					→ YouTube → history, format <b>JSON</b>. Upload <code>watch-history.json</code> so suggestions know which channels you actually watch.
-				</p>
-				<input type="file" name="file" accept=".json,application/json" class="block w-full text-sm file:mr-3 file:rounded-md file:border-0 file:bg-zinc-800 file:px-3 file:py-1.5 file:text-zinc-200"/>
-				<button class="rounded-lg bg-zinc-800 px-3 py-1.5 text-sm hover:bg-zinc-700">Import <span class="htmx-indicator">…</span></button>
-				<div id="history-result" class="text-sm text-zinc-400">
-					if p.State.HistoryImported {
-						Watch history imported.
-					}
+	<details class="group mt-6 border-t border-rule pt-4">
+		<summary class="cursor-pointer list-none text-sm font-medium text-ink-2 hover:text-ink [&::-webkit-details-marker]:hidden">
+			<span class="inline-block transition-transform group-open:rotate-90" aria-hidden="true">›</span>
+			Tune the suggestions
+			<span class="font-normal text-muted">
+				if p.State.Interests == "" && !p.State.HistoryImported {
+					· no interests or watch history yet
+				} else if p.State.HistoryImported {
+					· watch history imported
+				}
+			</span>
+		</summary>
+		<div class="mt-4 grid gap-8 pb-2 md:grid-cols-2">
+			<form hx-post="/interests" hx-swap="none" class="flex flex-col gap-2">
+				<label for="interests" class="text-sm font-medium">What are you into these days?</label>
+				<textarea id="interests" name="interests" rows="4" placeholder="Go and backend engineering, system design, football, cooking. Not into gaming any more." class="field h-auto py-2 leading-relaxed">{ p.State.Interests }</textarea>
+				<div class="flex items-center gap-3">
+					<button class="btn btn-sm">Save</button>
+					<span class="htmx-indicator text-sm text-muted">Saving…</span>
 				</div>
+				<p class="text-xs text-muted">The AI reads this on the next analysis.</p>
+			</form>
+			<form hx-post="/history" hx-encoding="multipart/form-data" hx-target="#history-result" class="flex flex-col gap-2">
+				<label for="history-file" class="text-sm font-medium">Watch history</label>
+				<p class="text-xs leading-relaxed text-muted">
+					YouTube's API can't see what you watch. Export it from
+					<a href="https://takeout.google.com/" target="_blank" rel="noreferrer" class="underline underline-offset-2 hover:text-ink">Google Takeout</a>
+					(YouTube → history) and upload <span class="font-mono">watch-history</span> here.
+				</p>
+				<input id="history-file" type="file" name="file" accept=".json,.html,application/json,text/html" class="text-sm file:mr-3 file:h-8 file:rounded-(--radius-control) file:border file:border-rule-strong file:bg-paper file:px-3 file:text-sm file:text-ink"/>
+				<div class="flex items-center gap-3">
+					<button class="btn btn-sm">Import</button>
+					<span class="htmx-indicator text-sm text-muted">Reading file…</span>
+				</div>
+				<p id="history-result" class="text-xs text-muted"></p>
 			</form>
 		</div>
 	</details>
@@ -137,15 +164,15 @@ templ settings(p Page) {
 
 templ JobBanner(j Job) {
 	if j.Running {
-		<div id="job" hx-get="/job" hx-trigger="every 1s" hx-swap="outerHTML" class="mt-6 rounded-xl bg-zinc-900 p-4 ring-1 ring-zinc-800">
-			<div class="flex justify-between text-sm">
-				<span>{ j.Label }</span>
+		<div id="job" hx-get="/job" hx-trigger="every 1s" hx-swap="outerHTML" class="border-t border-rule bg-paper-2">
+			<div class="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-2 text-sm sm:px-8">
+				<span>{ j.Label }…</span>
 				if j.Total > 0 {
-					<span class="text-zinc-400">{ fmt.Sprint(j.Done) } / { fmt.Sprint(j.Total) }</span>
+					<span class="font-mono text-muted tabular-nums">{ fmt.Sprint(j.Done) } / { fmt.Sprint(j.Total) }</span>
 				}
 			</div>
-			<div class="mt-2 h-2 overflow-hidden rounded-full bg-zinc-800">
-				<div class="h-full bg-indigo-500 transition-all" style={ fmt.Sprintf("width: %d%%", j.Percent()) }></div>
+			<div class="h-0.5 bg-rule" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow={ fmt.Sprint(j.Percent()) }>
+				<div class="h-full bg-ink transition-[width] duration-500" style={ fmt.Sprintf("width: %d%%", j.Percent()) }></div>
 			</div>
 		</div>
 	} else {
@@ -153,86 +180,110 @@ templ JobBanner(j Job) {
 	}
 }
 
-templ StatsBar(s Stats, oob bool) {
-	<section id="stats" hx-swap-oob?={ oob } class="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-		@stat("Subscriptions", s.Total, "text-white")
-		@stat("Keep", s.Keep, "text-emerald-300")
-		@stat("Review", s.Review, "text-amber-300")
-		@stat("Unsubscribe", s.Unsubscribe, "text-rose-300")
-		@stat("Inactive > 1 year", s.Inactive, "text-zinc-300")
-		if s.HistoryImported {
-			@stat("Never watched", s.NeverWatched, "text-zinc-300")
-		} else {
-			@stat("Not analyzed", s.Unanalyzed, "text-zinc-300")
+templ Summary(s Stats, oob bool) {
+	<section id="summary" hx-swap-oob?={ oob } class="pt-10">
+		<p class="max-w-3xl text-2xl leading-snug font-medium tracking-[-0.02em] sm:text-[1.875rem]">
+			if s.Total == 0 {
+				No subscriptions yet. Connect YouTube and sync to start.
+			} else if s.Analyzed() == 0 {
+				{ fmt.Sprint(s.Total) } subscriptions, none reviewed yet.
+			} else {
+				{ fmt.Sprint(s.Total) } subscriptions.
+				<span class="text-drop">Unsubscribe from { fmt.Sprint(s.Unsubscribe) }</span>,
+				review { fmt.Sprint(s.Review) }, keep { fmt.Sprint(s.Keep) }.
+			}
+		</p>
+		if s.Total > 0 {
+			<div class="mt-5 flex h-2 gap-px overflow-hidden rounded-full bg-paper-2" aria-hidden="true">
+				<div class="bg-drop" style={ "width: " + s.Pct(s.Unsubscribe) }></div>
+				<div class="bg-review" style={ "width: " + s.Pct(s.Review) }></div>
+				<div class="bg-keep" style={ "width: " + s.Pct(s.Keep) }></div>
+				<div class="bg-rule" style={ "width: " + s.Pct(s.Unanalyzed) }></div>
+			</div>
+			<ul class="mt-3 flex flex-wrap gap-x-5 gap-y-1 font-mono text-xs text-muted tabular-nums">
+				@legend("bg-drop", "Unsubscribe", s.Unsubscribe)
+				@legend("bg-review", "Review", s.Review)
+				@legend("bg-keep", "Keep", s.Keep)
+				if s.Unanalyzed > 0 {
+					@legend("bg-rule-strong", "Not analyzed", s.Unanalyzed)
+				}
+				<li>{ fmt.Sprint(s.Inactive) } inactive > 1 year</li>
+				if s.HistoryImported {
+					<li>{ fmt.Sprint(s.NeverWatched) } never watched</li>
+				}
+			</ul>
 		}
 	</section>
 }
 
-templ stat(label string, n int, color string) {
-	<div class="rounded-xl bg-zinc-900 p-4 ring-1 ring-zinc-800">
-		<div class={ "text-2xl font-semibold tabular-nums", color }>{ fmt.Sprint(n) }</div>
-		<div class="mt-1 text-xs text-zinc-400">{ label }</div>
-	</div>
+templ legend(mark, label string, n int) {
+	<li class="flex items-center gap-1.5">
+		<span class={ "size-2 rounded-[2px]", mark }></span>
+		{ label } { fmt.Sprint(n) }
+	</li>
 }
 
 templ ChannelList(l List) {
-	<div id="channel-list" class="mt-6 space-y-10">
+	<div id="channel-list">
 		if l.Shown == 0 {
-			<p class="py-16 text-center text-zinc-500">No channels to show. Connect your account and sync, or change the filters.</p>
+			<p class="py-20 text-center text-sm text-muted">Nothing matches. Clear the search or pick another filter.</p>
 		}
 		for _, g := range l.Groups {
-			<section>
-				<h2 class="mb-3 flex items-baseline gap-2 text-lg font-semibold text-white">
-					{ g.Name }
-					<span class="text-sm font-normal text-zinc-500">{ fmt.Sprint(len(g.Channels)) }</span>
+			<section class="mt-10">
+				<h2 class="flex items-baseline justify-between border-b border-ink pb-2">
+					<span class="font-semibold tracking-[-0.01em]">{ g.Name }</span>
+					<span class="font-mono text-xs text-muted tabular-nums">{ fmt.Sprint(len(g.Channels)) }</span>
 				</h2>
-				<div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+				<ul class="divide-y divide-rule">
 					for _, c := range g.Channels {
-						@ChannelCard(c)
+						@ChannelRow(c)
 					}
-				</div>
+				</ul>
 			</section>
 		}
 	</div>
 }
 
-templ ChannelCard(c store.Channel) {
-	<article id={ "ch-" + c.ID } class="flex flex-col gap-3 rounded-xl bg-zinc-900 p-4 ring-1 ring-zinc-800">
-		<div class="flex items-start gap-3">
-			<img src={ c.Thumbnail } alt="" loading="lazy" class="size-11 shrink-0 rounded-full bg-zinc-800"/>
-			<div class="min-w-0 flex-1">
-				<a href={ templ.SafeURL(c.URL()) } target="_blank" class="block truncate font-medium text-white hover:underline">{ c.Title }</a>
-				<p class="text-xs text-zinc-400">
-					{ Compact(c.SubscriberCount) } subs · last upload { Ago(c.LastUpload) }
-					if c.Inactive() {
-						<span class="text-rose-300">· inactive</span>
-					}
-				</p>
-				if c.WatchCount > 0 {
-					<p class="text-xs text-zinc-500">Watched { fmt.Sprint(c.WatchCount) }× · last { Ago(c.LastWatched) }</p>
+templ ChannelRow(c store.Channel) {
+	<li id={ "ch-" + c.ID } class="grid grid-cols-[2.25rem_minmax(0,1fr)] gap-x-4 gap-y-2 py-4 md:grid-cols-[2.25rem_minmax(0,15rem)_minmax(0,1fr)_auto] md:items-start">
+		<img src={ c.Thumbnail } alt="" loading="lazy" class="size-9 rounded-full bg-paper-2"/>
+		<div class="min-w-0">
+			<a href={ templ.SafeURL(c.URL()) } target="_blank" rel="noreferrer" class="block truncate font-medium hover:underline hover:underline-offset-2">{ c.Title }</a>
+			<p class="mt-0.5 font-mono text-xs text-muted tabular-nums">
+				{ Compact(c.SubscriberCount) } subs ·
+				if c.Inactive() {
+					<span class="text-drop">last upload { Ago(c.LastUpload) }</span>
+				} else {
+					uploaded { Ago(c.LastUpload) }
 				}
-			</div>
-			if c.Analysis != nil {
-				<span class={ "shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ring-1", VerdictClass(c.Analysis.Verdict) }>{ VerdictLabel(c.Analysis.Verdict) }</span>
+			</p>
+			if c.WatchCount > 0 {
+				<p class="font-mono text-xs text-muted tabular-nums">watched { fmt.Sprint(c.WatchCount) }× · last { Ago(c.LastWatched) }</p>
 			}
 		</div>
-		if c.Analysis != nil {
-			<div class="flex flex-wrap gap-1.5 text-xs">
-				<span class="rounded bg-zinc-800 px-2 py-0.5 text-zinc-300">{ c.Analysis.Category }</span>
-				<span class="rounded bg-zinc-800 px-2 py-0.5 text-zinc-300">{ c.Analysis.ContentType }</span>
-			</div>
-			<p class="text-sm text-zinc-400">{ c.Analysis.Reason }</p>
-		}
-		<div class="mt-auto flex justify-end">
+		<div class="col-start-2 min-w-0 md:col-start-auto">
+			if c.Analysis != nil {
+				<p class="flex flex-wrap items-center gap-x-2 text-sm">
+					<span class={ "size-2 shrink-0 rounded-[2px]", VerdictMark(c.Analysis.Verdict) } aria-hidden="true"></span>
+					<span class="font-medium">{ VerdictLabel(c.Analysis.Verdict) }</span>
+					<span class="text-muted">{ c.Analysis.Category } · { c.Analysis.ContentType }</span>
+				</p>
+				<p class="mt-1 text-sm leading-relaxed text-ink-2">{ c.Analysis.Reason }</p>
+			} else {
+				<p class="text-sm text-muted">Not analyzed yet</p>
+			}
+		</div>
+		<div class="col-start-2 flex gap-2 md:col-start-auto md:justify-end">
 			<button
 				hx-delete={ "/channels/" + c.ID }
 				hx-target={ "#ch-" + c.ID }
 				hx-swap="outerHTML"
 				hx-confirm={ "Unsubscribe from " + c.Title + "?" }
-				class="rounded-md px-2.5 py-1 text-xs text-zinc-400 ring-1 ring-zinc-700 hover:bg-rose-600 hover:text-white hover:ring-rose-600"
+				class="btn btn-sm btn-drop"
 			>
-				Unsubscribe <span class="htmx-indicator">…</span>
+				<span class="htmx-hide-on-request">Unsubscribe</span>
+				<span class="htmx-indicator">Unsubscribing…</span>
 			</button>
 		</div>
-	</article>
+	</li>
 }
