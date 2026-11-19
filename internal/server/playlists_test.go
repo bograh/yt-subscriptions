@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"context"
@@ -11,8 +11,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"golang.org/x/oauth2"
 
 	"yt-subscriptions/internal/store"
 )
@@ -105,25 +103,11 @@ func TestPlaylistSyncCleanMergeDelete(t *testing.T) {
 	defer srv.Close()
 
 	ctx := context.Background()
-	st, err := store.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	st.SaveToken(&oauth2.Token{AccessToken: "a", Expiry: time.Now().Add(time.Hour)})
-	a := &App{ctx: ctx, store: st, oauth: &oauth2.Config{}, quotaLimit: 10_000, ytBase: srv.URL + "/"}
-	post := func(h http.HandlerFunc, path, id string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodPost, path, nil)
-		if id != "" {
-			req.SetPathValue("id", id)
-		}
-		rec := httptest.NewRecorder()
-		h(rec, req)
-		a.jobs.Wait()
-		if a.lastErr != "" {
-			t.Fatalf("%s: job failed: %s", path, a.lastErr)
-		}
-		return rec
-	}
+	a := newTestServer(t, nil)
+	a.ytBase = srv.URL + "/"
+	connect(t, a)
+	st := a.store
+	post := func(h http.HandlerFunc, path, id string) { runJob(t, a, h, path, id) }
 
 	post(a.handlePlaylistSync, "/playlists/sync", "")
 	ps, _ := st.Playlists(ctx)
@@ -132,7 +116,7 @@ func TestPlaylistSyncCleanMergeDelete(t *testing.T) {
 	}
 
 	// Clean up PLa: removes the unavailable item and the duplicate, in YouTube and locally.
-	post(a.handlePlaylistClean("PLa"), "/playlists/PLa/clean", "PLa")
+	post(a.handlePlaylistClean, "/playlists/PLa/clean", "PLa")
 	if got := len(yt.items["PLa"]); got != 2 {
 		t.Fatalf("PLa on YouTube has %d items, want 2", got)
 	}
@@ -168,60 +152,5 @@ func TestPlaylistSyncCleanMergeDelete(t *testing.T) {
 	ps, _ = st.Playlists(ctx)
 	if len(ps.Playlists) != 1 || len(yt.playlists) != 1 {
 		t.Fatalf("after delete: local %d, youtube %d", len(ps.Playlists), len(yt.playlists))
-	}
-}
-
-type fakePlaylistAnalyzer struct {
-	calls int
-	mu    sync.Mutex
-}
-
-func (f *fakePlaylistAnalyzer) AnalyzePlaylists(_ context.Context, _ string, _, batch []store.Playlist) (map[string]store.PlaylistAnalysis, error) {
-	f.mu.Lock()
-	f.calls++
-	f.mu.Unlock()
-	out := map[string]store.PlaylistAnalysis{}
-	for i, p := range batch {
-		if i == 0 && len(batch) > 1 {
-			continue // skip one; the job should ask again
-		}
-		out[p.ID] = store.PlaylistAnalysis{Topic: "Programming", Verdict: store.PlaylistKeep, AnalyzedAt: time.Now()}
-	}
-	return out, nil
-}
-
-func TestPlaylistAnalysisJob(t *testing.T) {
-	ctx := context.Background()
-	st, _ := store.Open(t.TempDir())
-	var pls []store.Playlist
-	for i := range 25 {
-		pls = append(pls, store.Playlist{ID: fmt.Sprintf("PL%02d", i), Title: fmt.Sprint(i)})
-	}
-	st.ReplacePlaylists(ctx, pls)
-	st.SetPlaylistDecision(ctx, "PL00", store.PlaylistKeep)
-	f := &fakePlaylistAnalyzer{}
-	a := &App{ctx: ctx, store: st, quotaLimit: 10_000, testPlaylistAnalyzer: f, retryBackoff: time.Millisecond}
-
-	ps, _ := st.Playlists(ctx)
-	var todo []store.Playlist
-	for _, p := range ps.Playlists {
-		if p.Decision == "" {
-			todo = append(todo, p)
-		}
-	}
-	if err := a.runPlaylistAnalysis(ctx, ps, todo, func(int, int) {}); err != nil {
-		t.Fatal(err)
-	}
-	ps, _ = st.Playlists(ctx)
-	for _, p := range ps.Playlists[1:] {
-		if p.Analysis == nil || p.Analysis.Basis != ps.Basis {
-			t.Fatalf("%s not analyzed", p.ID)
-		}
-	}
-	if ps.Playlists[0].Analysis != nil {
-		t.Fatal("decided playlist should not be sent")
-	}
-	if f.calls != 4 { // batches of 20 + 4, each with one follow-up
-		t.Fatalf("calls = %d, want 4", f.calls)
 	}
 }

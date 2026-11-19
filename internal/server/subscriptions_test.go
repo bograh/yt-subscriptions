@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"context"
@@ -8,8 +8,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"golang.org/x/oauth2"
 
 	"yt-subscriptions/internal/store"
 )
@@ -32,11 +30,11 @@ func TestBulkUnsubscribeRespectsDecisionsAndQuota(t *testing.T) {
 	defer yt.Close()
 
 	ctx := context.Background()
-	st, err := store.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	st.SaveToken(&oauth2.Token{AccessToken: "a", Expiry: time.Now().Add(time.Hour)})
+	a := newTestServer(t, nil)
+	a.quotaLimit = 100 // room for two 50-unit unsubscribes
+	a.ytBase = yt.URL + "/"
+	connect(t, a)
+	st := a.store
 	st.ReplaceChannels(ctx, []store.Channel{
 		{ID: "UC1", SubscriptionID: "s1", Title: "One"},
 		{ID: "UC2", SubscriptionID: "s2", Title: "Two"},
@@ -52,13 +50,6 @@ func TestBulkUnsubscribeRespectsDecisionsAndQuota(t *testing.T) {
 	})
 	st.SetDecision(ctx, "UC2", store.VerdictKeep)
 
-	a := &App{
-		ctx:        ctx,
-		store:      st,
-		oauth:      &oauth2.Config{},
-		quotaLimit: 100, // room for two 50-unit unsubscribes
-		ytBase:     yt.URL + "/",
-	}
 	req := httptest.NewRequest(http.MethodPost, "/unsubscribe-suggested", nil)
 	a.handleBulkUnsubscribe(httptest.NewRecorder(), req)
 	a.jobs.Wait()

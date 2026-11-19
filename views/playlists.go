@@ -6,19 +6,15 @@ import (
 	"strings"
 
 	"yt-subscriptions/internal/store"
+	"yt-subscriptions/internal/youtube"
 )
 
+// PlaylistPage is the Playlists dashboard.
 type PlaylistPage struct {
-	State        store.PlaylistState
-	Connected    bool
-	OAuthReady   bool
-	AIConfigured bool
-	Job          Job
-	Error        string
-	Warning      string
-	Flash        string
-	Stats        PlaylistStats
-	List         PlaylistList
+	Status
+	State store.PlaylistState
+	Stats PlaylistStats
+	List  PlaylistList
 }
 
 type PlaylistStats struct {
@@ -79,12 +75,12 @@ func (s PlaylistStats) Pct(n int) string {
 
 // CleanAllNote explains what "Clean up all" removes and costs.
 func (s PlaylistStats) CleanAllNote() string {
-	cost := s.Cleanable() * 50
+	cost := s.Cleanable() * youtube.CostWrite
 	note := fmt.Sprintf("Removes %s and %s across your playlists for about %s quota units",
 		plural(s.Unavailable, "unavailable video", "unavailable videos"),
 		plural(s.Duplicates, "duplicate", "duplicates"), Thousands(cost))
 	if cost > s.QuotaRemaining() {
-		return fmt.Sprintf("%s; today's quota covers %d of them.", note, s.QuotaRemaining()/50)
+		return fmt.Sprintf("%s; today's quota covers %d of them.", note, s.QuotaRemaining()/youtube.CostWrite)
 	}
 	return note + "."
 }
@@ -248,11 +244,4 @@ func Privacy(p store.Playlist) string {
 		return p.Privacy
 	}
 	return ""
-}
-
-func plural(n int, one, many string) string {
-	if n == 1 {
-		return "1 " + one
-	}
-	return fmt.Sprintf("%d %s", n, many)
 }

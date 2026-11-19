@@ -5,26 +5,7 @@ import (
 	"yt-subscriptions/internal/store"
 )
 
-templ layout() {
-	<!DOCTYPE html>
-	<html lang="en" class="bg-paper">
-		<head>
-			<meta charset="utf-8"/>
-			<meta name="viewport" content="width=device-width, initial-scale=1"/>
-			<meta name="color-scheme" content="light dark"/>
-			<title>YouTube Cleanup</title>
-			<meta name="htmx-config" content='{"includeIndicatorStyles":false}'/>
-			<link rel="stylesheet" href="/static/app.css"/>
-			<script src="/static/htmx.min.js" defer></script>
-			<script src="/static/app.js" defer></script>
-		</head>
-		<body class="bg-paper font-sans text-ink antialiased">
-			{ children... }
-			<div id="toasts" class="pointer-events-none fixed inset-x-4 bottom-4 z-50 flex flex-col gap-2 sm:left-auto sm:w-96" aria-live="polite"></div>
-		</body>
-	</html>
-}
-
+// The Subscriptions page (GET /) and the fragments its actions re-render.
 templ Dashboard(p Page) {
 	@layout() {
 		@appHeader(HeaderData{Active: "subscriptions", SyncedAt: p.State.SyncedAt, Connected: p.Connected, OAuthReady: p.OAuthReady, Job: p.Job}) {
@@ -75,86 +56,6 @@ templ Dashboard(p Page) {
 	}
 }
 
-templ appHeader(h HeaderData) {
-	<header class="border-b border-rule">
-		<div class="mx-auto flex max-w-6xl flex-wrap items-center gap-x-6 gap-y-3 px-4 py-4 sm:px-8">
-			<div class="mr-auto flex min-w-0 flex-wrap items-baseline gap-x-6 gap-y-1">
-				<span class="text-[1.0625rem] font-semibold tracking-[-0.01em]">YouTube Cleanup</span>
-				<nav class="flex gap-4 text-sm" aria-label="Sections">
-					@navLink("/", "Subscriptions", h.Active == "subscriptions")
-					@navLink("/playlists", "Playlists", h.Active == "playlists")
-				</nav>
-				<p class="w-full text-sm text-muted">
-					if h.SyncedAt.IsZero() {
-						Not synced yet
-					} else {
-						Synced { Ago(h.SyncedAt) }
-					}
-					if h.Connected {
-						· YouTube connected ·
-						<button hx-post="/auth/logout" hx-confirm="Disconnect YouTube? Your data and suggestions stay; you'll need to connect again to sync or make changes." class="underline underline-offset-2 hover:text-ink">Disconnect</button>
-					}
-				</p>
-			</div>
-			<div class="flex flex-wrap gap-2">
-				if !h.Connected {
-					<a href="/auth/login" class="btn btn-primary" aria-disabled?={ !h.OAuthReady }>Connect YouTube</a>
-				} else {
-					{ children... }
-				}
-			</div>
-		</div>
-		@JobBanner(h.Job)
-	</header>
-}
-
-templ navLink(href, label string, active bool) {
-	if active {
-		<a href={ templ.SafeURL(href) } aria-current="page" class="border-b-2 border-ink pb-0.5 font-medium text-ink">{ label }</a>
-	} else {
-		<a href={ templ.SafeURL(href) } class="border-b-2 border-transparent pb-0.5 text-muted hover:text-ink">{ label }</a>
-	}
-}
-
-templ pageNotices(oauthReady, aiConfigured bool, errMsg, warning, flash string) {
-	if !oauthReady {
-		@notice("YouTube isn't configured", "Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in .env, then restart. The README walks through creating the OAuth client.")
-	}
-	if !aiConfigured {
-		@notice("No AI model configured", "Set AI_MODEL, plus AI_BASE_URL and AI_API_KEY for your provider, in .env to get suggestions.")
-	}
-	if errMsg != "" {
-		<div class="mt-6 rounded-(--radius-control) border border-drop px-4 py-3 text-sm" role="alert">
-			<p class="font-medium text-drop">Last job failed</p>
-			<p class="mt-0.5 text-ink-2">{ errMsg }</p>
-		</div>
-	}
-	if flash != "" {
-		@notice("Done", flash)
-	}
-	if warning != "" {
-		@notice("Heads up", warning)
-	}
-}
-
-templ notice(title, body string) {
-	<div class="mt-6 rounded-(--radius-control) border border-rule-strong bg-paper-2 px-4 py-3 text-sm">
-		<p class="font-medium">{ title }</p>
-		<p class="mt-0.5 text-ink-2">{ body }</p>
-	</div>
-}
-
-templ groupOption(value, label, current string) {
-	<label class="cursor-pointer">
-		<input type="radio" name="group" value={ value } class="peer sr-only" checked?={ value == current }/>
-		<span class="block rounded-(--radius-control) px-2.5 py-1.5 text-sm whitespace-nowrap text-muted transition-colors peer-checked:bg-ink peer-checked:text-paper peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-focus hover:text-ink peer-checked:hover:text-paper">{ label }</span>
-	</label>
-}
-
-templ verdictOption(value, label, current string) {
-	<option value={ value } selected?={ value == current }>{ label }</option>
-}
-
 templ settings(p Page) {
 	<details class="group mt-6 border-t border-rule pt-4">
 		<summary class="cursor-pointer list-none text-sm font-medium text-ink-2 hover:text-ink [&::-webkit-details-marker]:hidden">
@@ -190,28 +91,9 @@ templ settings(p Page) {
 					<button class="btn btn-sm">Import</button>
 					<span class="htmx-indicator text-sm text-muted">Reading file…</span>
 				</div>
-
 			</form>
 		</div>
 	</details>
-}
-
-templ JobBanner(j Job) {
-	if j.Running {
-		<div id="job" hx-get="/job" hx-trigger="every 1s" hx-swap="outerHTML" class="border-t border-rule bg-paper-2">
-			<div class="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-2 text-sm sm:px-8">
-				<span>{ j.Label }…</span>
-				if j.Total > 0 {
-					<span class="font-mono text-muted tabular-nums">{ fmt.Sprint(j.Done) } / { fmt.Sprint(j.Total) }</span>
-				}
-			</div>
-			<div class="h-0.5 bg-rule" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow={ fmt.Sprint(j.Percent()) }>
-				<div class="h-full bg-ink transition-[width] duration-500" style={ fmt.Sprintf("width: %d%%", j.Percent()) }></div>
-			</div>
-		</div>
-	} else {
-		<div id="job"></div>
-	}
 }
 
 templ Summary(s Stats, oob bool) {
@@ -266,24 +148,6 @@ templ Summary(s Stats, oob bool) {
 }
 
 // sentenceText renders " A, b, c." with accent clauses in the accent colour.
-templ sentenceText(parts []SentencePart) {
-	for i, part := range parts {
-		{ " " }
-		if part.Accent {
-			<span class="text-drop">{ part.Text }</span>{ punct(i, len(parts)) }
-		} else {
-			{ part.Text + punct(i, len(parts)) }
-		}
-	}
-}
-
-templ legend(mark, label string, n int) {
-	<li class="flex items-center gap-1.5">
-		<span class={ "size-2 rounded-[2px]", mark }></span>
-		{ label } { fmt.Sprint(n) }
-	</li>
-}
-
 templ ChannelList(l List) {
 	<div id="channel-list">
 		if l.Shown == 0 {

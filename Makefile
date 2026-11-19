@@ -1,4 +1,5 @@
 APP              := yt-subscriptions
+CMD              := ./cmd/$(APP)
 BIN              := bin/$(APP)
 IMAGE            ?= $(APP):latest
 VERSION          ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
@@ -13,10 +14,16 @@ TW_OS   := $(if $(filter darwin,$(UNAME_S)),macos,linux)
 TW_ARCH := $(if $(filter x86_64 amd64,$(UNAME_M)),x64,arm64)
 
 .DEFAULT_GOAL := help
-.PHONY: help generate css build run dev fmt vet test tidy check clean docker-build docker-run up down
+.PHONY: help setup generate css build run dev fmt vet test tidy check clean docker-build docker-run up down
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
+
+setup: $(TAILWIND) .env generate css ## First-time setup: tools, .env, generated files
+	@echo "Next: fill in .env (Google OAuth client and AI settings), then run 'make run'."
+
+.env:
+	cp .env.example .env
 
 $(TAILWIND):
 	@mkdir -p bin
@@ -30,14 +37,14 @@ css: $(TAILWIND) ## Build static/app.css with the Tailwind CLI
 	$(TAILWIND) -i styles/input.css -o static/app.css --minify
 
 build: generate css ## Build the binary into bin/
-	go build -ldflags="-X main.version=$(VERSION)" -o $(BIN) .
+	go build -ldflags="-X main.version=$(VERSION)" -o $(BIN) $(CMD)
 
 run: build ## Build and run the dashboard
 	PORT=$(PORT) ./$(BIN)
 
 dev: $(TAILWIND) ## Live reload: rebuilds CSS and templates (open the proxy on :7331)
 	$(TAILWIND) -i styles/input.css -o static/app.css --watch=always & \
-	$(TEMPL) generate --watch --proxy=http://localhost:$(PORT) --cmd="go run ."; \
+	$(TEMPL) generate --watch --proxy=http://localhost:$(PORT) --cmd="go run $(CMD)"; \
 	kill %1
 
 fmt: ## Format Go and templ files
@@ -47,8 +54,8 @@ fmt: ## Format Go and templ files
 vet: generate ## Run go vet
 	go vet ./...
 
-test: generate ## Run tests
-	go test ./...
+test: generate ## Run tests (with the race detector, like CI)
+	go test -race ./...
 
 tidy: ## Tidy go.mod
 	go mod tidy
