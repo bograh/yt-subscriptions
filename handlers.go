@@ -148,7 +148,7 @@ func (a *App) startJob(w http.ResponseWriter, r *http.Request, label string, fn 
 func (a *App) handleSync(w http.ResponseWriter, r *http.Request) {
 	yt, err := a.youtube()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
+		fail(w, http.StatusUnauthorized, "Can't sync", err)
 		return
 	}
 	a.startJob(w, r, "Syncing subscriptions", func(ctx context.Context, progress func(int, int)) error {
@@ -163,7 +163,7 @@ func (a *App) handleSync(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	if a.ai.Model == "" {
-		http.Error(w, "AI_MODEL is not configured", http.StatusBadRequest)
+		fail(w, http.StatusBadRequest, "Can't analyze", errors.New("AI_MODEL is not configured"))
 		return
 	}
 	all := r.URL.Query().Get("all") == "1"
@@ -207,31 +207,32 @@ func (a *App) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleUnsubscribe(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	const title = "Couldn't unsubscribe"
 	subID, err := a.store.SubscriptionID(r.Context(), id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		fail(w, http.StatusInternalServerError, title, err)
 		return
 	}
 	if subID == "" {
-		http.Error(w, "unknown channel", http.StatusNotFound)
+		fail(w, http.StatusNotFound, title, errors.New("that channel isn't in your synced subscriptions"))
 		return
 	}
 	yt, err := a.youtube()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
+		fail(w, http.StatusUnauthorized, title, err)
 		return
 	}
 	if err := yt.Unsubscribe(r.Context(), subID); err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		fail(w, http.StatusBadGateway, title, err)
 		return
 	}
 	if err := a.store.DeleteChannel(r.Context(), id); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		fail(w, http.StatusInternalServerError, title, err)
 		return
 	}
 	st, err := a.store.Snapshot(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		fail(w, http.StatusInternalServerError, title, err)
 		return
 	}
 	// Empty body removes the card; stats are refreshed out-of-band.
@@ -241,26 +242,27 @@ func (a *App) handleUnsubscribe(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleInterests(w http.ResponseWriter, r *http.Request) {
 	interests := r.FormValue("interests")
 	if err := a.store.SetInterests(r.Context(), interests); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		fail(w, http.StatusInternalServerError, "Couldn't save interests", err)
 	}
 }
 
 func (a *App) handleHistory(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 512<<20)
+	const title = "Couldn't import watch history"
 	f, _, err := r.FormFile("file")
 	if err != nil {
-		fmt.Fprint(w, "Choose your watch-history.json file first.")
+		fail(w, http.StatusBadRequest, title, errors.New("choose your Takeout watch-history file first"))
 		return
 	}
 	defer f.Close()
 	stats, err := youtube.ParseWatchHistory(f)
 	if err != nil {
-		fmt.Fprintf(w, "Could not read that file (is it the JSON export?): %v", err)
+		fail(w, http.StatusBadRequest, title, fmt.Errorf("that doesn't look like a Takeout watch history: %w", err))
 		return
 	}
 	matched, err := a.store.ImportWatchStats(r.Context(), stats)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		fail(w, http.StatusInternalServerError, title, err)
 		return
 	}
 	fmt.Fprintf(w, "Imported. You've watched %d of your subscribed channels. Run \"Re-analyze all\" to use it.", matched)
@@ -343,6 +345,12 @@ func (s *savingTokenSource) Token() (*oauth2.Token, error) {
 		}
 	}
 	return t, nil
+}
+
+// fail writes a plain-text error; static/app.js shows it as a toast with the given title.
+func fail(w http.ResponseWriter, status int, title string, err error) {
+	w.Header().Set("X-Error-Title", title)
+	http.Error(w, err.Error(), status)
 }
 
 func render(w http.ResponseWriter, r *http.Request, c templ.Component) {

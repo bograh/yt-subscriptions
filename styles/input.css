@@ -135,6 +135,36 @@
     color: var(--color-muted);
   }
 
+  .toast {
+    pointer-events: auto;
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    border: 1px solid var(--color-rule-strong);
+    border-radius: var(--radius-control);
+    background: var(--color-paper);
+    padding: 0.75rem 0.875rem;
+    font-size: 0.875rem;
+    box-shadow: 0 6px 24px -12px oklch(19% 0.012 60 / 0.35);
+  }
+  .toast-title {
+    font-weight: 500;
+    color: var(--color-drop);
+  }
+  .toast-detail {
+    margin-top: 0.125rem;
+    color: var(--color-ink-2);
+    overflow-wrap: anywhere;
+  }
+  .toast-close {
+    color: var(--color-muted);
+    line-height: 1;
+    font-size: 1.125rem;
+  }
+  .toast-close:hover {
+    color: var(--color-ink);
+  }
+
   /* htmx: show "working" affordances only while a request is in flight. */
   .htmx-indicator {
     display: none;
