@@ -160,6 +160,12 @@ func Open(dir string) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
+// Ping checks that the database answers a query.
+func (s *Store) Ping(ctx context.Context) error {
+	var one int
+	return s.db.QueryRowContext(ctx, `SELECT 1`).Scan(&one)
+}
+
 // Snapshot loads the current subscriptions with their analyses and watch stats.
 func (s *Store) Snapshot(ctx context.Context) (State, error) {
 	var st State
