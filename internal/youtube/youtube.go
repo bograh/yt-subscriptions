@@ -2,6 +2,7 @@
 package youtube
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -30,10 +31,12 @@ type Client struct {
 	OnCost func(units int)
 }
 
-// Quota costs per the YouTube Data API docs: reads are 1 unit, subscriptions.delete 50.
+// Quota costs per the YouTube Data API docs: reads are 1 unit; writes
+// (insert/update/delete, e.g. subscriptions.delete, playlistItems.insert) are 50.
 const (
 	CostRead        = 1
-	CostUnsubscribe = 50
+	CostWrite       = 50
+	CostUnsubscribe = CostWrite
 )
 
 // APIError is a non-2xx response from the YouTube Data API.
@@ -73,18 +76,34 @@ type apiErrorBody struct {
 }
 
 func (c *Client) do(ctx context.Context, method, endpoint string, q url.Values, out any) error {
+	return c.send(ctx, method, endpoint, q, nil, out)
+}
+
+// send is do with an optional request body, sent as JSON when non-nil.
+func (c *Client) send(ctx context.Context, method, endpoint string, q url.Values, in, out any) error {
 	base := c.Base
 	if base == "" {
 		base = apiBase
 	}
-	req, err := http.NewRequestWithContext(ctx, method, base+endpoint+"?"+q.Encode(), nil)
+	var reqBody io.Reader
+	if in != nil {
+		b, err := json.Marshal(in)
+		if err != nil {
+			return err
+		}
+		reqBody = bytes.NewReader(b)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, base+endpoint+"?"+q.Encode(), reqBody)
 	if err != nil {
 		return err
 	}
+	if in != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	if c.OnCost != nil {
 		cost := CostRead
-		if method == http.MethodDelete {
-			cost = CostUnsubscribe
+		if method != http.MethodGet {
+			cost = CostWrite
 		}
 		c.OnCost(cost) // Google bills attempts, including failed ones
 	}
