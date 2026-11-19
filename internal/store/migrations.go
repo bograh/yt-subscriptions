@@ -54,6 +54,43 @@ var migrations = []string{
 		verdict    TEXT NOT NULL,
 		decided_at INTEGER NOT NULL
 	);`,
+
+	// 5: the user's own playlists, their items, and AI analyses / user decisions for them.
+	`CREATE TABLE playlists (
+		id           TEXT PRIMARY KEY,
+		title        TEXT NOT NULL,
+		description  TEXT NOT NULL DEFAULT '',
+		thumbnail    TEXT NOT NULL DEFAULT '',
+		privacy      TEXT NOT NULL DEFAULT '',
+		published_at INTEGER,
+		sort         INTEGER NOT NULL DEFAULT 0
+	);
+	CREATE TABLE playlist_items (
+		id            TEXT PRIMARY KEY,
+		playlist_id   TEXT NOT NULL,
+		video_id      TEXT NOT NULL,
+		title         TEXT NOT NULL DEFAULT '',
+		channel_id    TEXT NOT NULL DEFAULT '',
+		channel_title TEXT NOT NULL DEFAULT '',
+		position      INTEGER NOT NULL DEFAULT 0,
+		added_at      INTEGER,
+		unavailable   INTEGER NOT NULL DEFAULT 0
+	);
+	CREATE INDEX playlist_items_by_playlist ON playlist_items (playlist_id, position);
+	CREATE TABLE playlist_analyses (
+		playlist_id TEXT PRIMARY KEY,
+		topic       TEXT NOT NULL,
+		verdict     TEXT NOT NULL,
+		merge_with  TEXT NOT NULL DEFAULT '',
+		reason      TEXT NOT NULL,
+		analyzed_at INTEGER NOT NULL,
+		basis       TEXT NOT NULL DEFAULT ''
+	);
+	CREATE TABLE playlist_decisions (
+		playlist_id TEXT PRIMARY KEY,
+		verdict     TEXT NOT NULL,
+		decided_at  INTEGER NOT NULL
+	);`,
 }
 
 func migrate(db *sql.DB) error {
