@@ -83,7 +83,7 @@ func (c *Client) Analyze(ctx context.Context, interests string, historyImported 
 		Title        string   `json:"title"`
 		Description  string   `json:"description,omitempty"`
 		Topics       []string `json:"topics,omitempty"`
-		Subscribers  int64    `json:"subscribers"`
+		Subscribers  *int64   `json:"subscribers,omitempty"` // nil when the channel hides it
 		LastUpload   string   `json:"last_upload,omitempty"`
 		RecentVideos []string `json:"recent_videos,omitempty"`
 		SubscribedOn string   `json:"subscribed_on,omitempty"`
@@ -114,10 +114,13 @@ func (c *Client) Analyze(ctx context.Context, interests string, historyImported 
 			Title:        truncate(sanitize(ch.Title), maxTitleRunes),
 			Description:  truncate(sanitize(ch.Description), maxDescriptionRunes),
 			Topics:       topics,
-			Subscribers:  ch.SubscriberCount,
 			RecentVideos: videos,
 			LastUpload:   date(ch.LastUpload),
 			SubscribedOn: date(ch.SubscribedAt),
+		}
+		if !ch.SubscribersHidden {
+			n := ch.SubscriberCount
+			it.Subscribers = &n
 		}
 		if historyImported {
 			n := ch.WatchCount

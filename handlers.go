@@ -23,8 +23,6 @@ import (
 	"yt-subscriptions/views"
 )
 
-const analyzeBatchSize = 25
-
 type App struct {
 	ctx   context.Context // cancelled on shutdown; parent of background jobs
 	jobs  sync.WaitGroup
@@ -38,8 +36,11 @@ type App struct {
 	lastWarn    string
 	flash       string // one-time notice, cleared once shown
 	oauthStates map[string]time.Time
-	quotaLimit  int // YouTube API units per day (YOUTUBE_DAILY_QUOTA)
+	quotaLimit  int    // YouTube API units per day (YOUTUBE_DAILY_QUOTA)
 	ytBase      string // YouTube API base URL override (tests)
+	// Test hooks for the analysis job.
+	testAnalyzer analyzer
+	retryBackoff time.Duration
 }
 
 func (a *App) routes() http.Handler {
@@ -217,26 +218,12 @@ func (a *App) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 				todo = append(todo, c)
 			}
 		}
-		progress(0, len(todo))
-		var failed []error
-		for start := 0; start < len(todo); start += analyzeBatchSize {
-			batch := todo[start:min(start+analyzeBatchSize, len(todo))]
-			res, err := a.ai.Analyze(ctx, st.Interests, st.HistoryImported, batch)
-			if err != nil && ctx.Err() == nil { // one retry for flaky model output
-				res, err = a.ai.Analyze(ctx, st.Interests, st.HistoryImported, batch)
-			}
-			if err != nil {
-				failed = append(failed, err)
-				if ctx.Err() != nil {
-					break
-				}
-			} else if err := a.store.SaveAnalyses(ctx, withBasis(res, st.Basis)); err != nil {
-				return err
-			}
-			progress(min(start+analyzeBatchSize, len(todo)), len(todo))
+		res := a.runAnalysis(ctx, st, todo, progress)
+		if res.saveErr != nil {
+			return res.saveErr
 		}
-		if len(failed) > 0 {
-			return fmt.Errorf("%d batch(es) failed, run \"Analyze new\" to retry them; first error: %w", len(failed), failed[0])
+		if res.failed > 0 {
+			return fmt.Errorf("%d of %d channels couldn't be analyzed; run Analyze new to retry them. First error: %w", res.failed, len(todo), res.firstErr)
 		}
 		return nil
 	})
@@ -418,6 +405,11 @@ func (a *App) handleHistory(w http.ResponseWriter, r *http.Request) {
 	stats, err := youtube.ParseWatchHistory(f)
 	if err != nil {
 		fail(w, http.StatusBadRequest, title, fmt.Errorf("that doesn't look like a Takeout watch history: %w", err))
+		return
+	}
+	if len(stats) == 0 {
+		// Don't wipe existing stats with an empty import (wrong file, or a non-English export).
+		fail(w, http.StatusBadRequest, title, errors.New("no watched channels found in that file; make sure it's watch-history from YouTube's Takeout export"))
 		return
 	}
 	matched, err := a.store.ImportWatchStats(r.Context(), stats)
