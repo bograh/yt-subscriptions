@@ -1,0 +1,50 @@
+# Local:      docker compose up -d                  -> http://localhost:8080
+# Public:     DOMAIN=subs.example.com docker compose --profile https up -d
+#             (Caddy gets a Let's Encrypt certificate; DNS for DOMAIN must point here)
+#
+# Settings come from .env (see .env.example). SQLite allows one writer:
+# run exactly one replica of the app.
+
+services:
+  app:
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-dev}
+    image: ${IMAGE:-yt-subscriptions:latest}
+    env_file: .env
+    environment:
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+    ports:
+      - "127.0.0.1:8080:8080" # localhost only; the https profile serves the public side
+    volumes:
+      - data:/data
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp] # SQLite may need scratch space; the root filesystem is read-only
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    stop_grace_period: 15s
+
+  caddy:
+    profiles: [https]
+    image: caddy:2.10-alpine
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN to your public hostname}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  data:
+  caddy-data:
+  caddy-config:

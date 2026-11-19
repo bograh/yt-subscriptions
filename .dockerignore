@@ -1,5 +1,12 @@
 .env
+.env.*
+!.env.example
 data/
 bin/
 *_templ.go
 .git
+.github
+.hallmark
+deploy
+docker-compose.yml
+*.md

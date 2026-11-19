@@ -1,0 +1,7 @@
+# HTTPS reverse proxy for the dashboard. Caddy obtains and renews the
+# certificate for {$DOMAIN} automatically.
+{$DOMAIN} {
+	encode zstd gzip
+	header Strict-Transport-Security "max-age=31536000"
+	reverse_proxy app:8080
+}

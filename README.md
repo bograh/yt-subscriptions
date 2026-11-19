@@ -19,7 +19,7 @@ You decide; the dashboard unsubscribes for you.
 `make dev` does the same with live reload; open the proxy at http://localhost:7331.
 `make help` lists every target.
 
-### Docker
+### Docker, locally
 
 ```sh
 make docker-build
@@ -27,6 +27,35 @@ make docker-run   # uses .env, publishes on 127.0.0.1 only, keeps data in the "y
 ```
 
 If you change the port (`make docker-run PORT=9090`), add the new redirect URI to your Google OAuth client too.
+
+## Deploying
+
+The image is a small distroless container (non-root, no shell) for `linux/amd64` and `linux/arm64`. It stores everything in SQLite on the `/data` volume, so **run exactly one instance** and back up that volume.
+
+### On a server with Docker Compose (HTTPS included)
+
+1. Point a DNS record (e.g. `subs.example.com`) at the server; open ports 80 and 443.
+2. Copy `.env.example` to `.env` and set at least:
+   - `PUBLIC_URL=https://subs.example.com`
+   - `DASHBOARD_PASSWORD` (the app refuses to start publicly without one)
+   - `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and the `AI_*` settings
+3. In your Google OAuth client, add the redirect URI `https://subs.example.com/auth/callback`.
+4. Start it:
+   ```sh
+   DOMAIN=subs.example.com docker compose --profile https up -d --build
+   ```
+   Caddy gets and renews the TLS certificate and proxies to the app. Without `--profile https`, the app is only reachable on `127.0.0.1:8080` of that machine.
+
+The compose file runs the app read-only, with all capabilities dropped and `no-new-privileges`, and restarts it unless stopped. `make up` / `make down` wrap compose for local use.
+
+### Anywhere else (Fly.io, Railway, Kubernetes, a VM...)
+
+- **Image:** build with `docker build --build-arg VERSION=v1.0.0 .`, or push a tag (`git tag v1.0.0 && git push origin v1.0.0`) and the release workflow publishes `ghcr.io/bograh/yt-subscriptions:1.0.0` and `:latest`.
+- **Port:** the container listens on `8080` (`PORT`).
+- **Volume:** mount persistent storage at `/data`.
+- **Health:** `GET /healthz` returns 200 when the database answers; it skips the password. The image's `HEALTHCHECK` already uses it.
+- **TLS:** terminate HTTPS at your platform or proxy. Keep the original `Host` header (most proxies do); the cross-site request check compares it with the browser's `Origin`.
+- **Shutdown:** `SIGTERM` stops new requests, cancels running jobs and closes the database within about 10 seconds.
 
 ## Using it
 
@@ -52,9 +81,9 @@ If you change the port (`make docker-run PORT=9090`), add the new redirect URI t
 
 The dashboard can unsubscribe you from channels, so:
 
-- It listens on `127.0.0.1` unless you set `HOST`. `make docker-run` publishes on `127.0.0.1` only.
-- Requests from other websites are rejected (Go's `http.CrossOriginProtection`).
-- Set `DASHBOARD_PASSWORD` to require a password (HTTP basic auth, any username). The app warns at startup if it's reachable from other machines without one.
+- It listens on `127.0.0.1` unless you set `HOST`. `make docker-run` and the compose file publish on `127.0.0.1` only; the `https` profile puts Caddy in front.
+- `DASHBOARD_PASSWORD` requires a password (HTTP basic auth, any username; use it only over HTTPS). On any non-loopback address the app **refuses to start** without it, unless you set `ALLOW_NO_PASSWORD=1` because access is restricted some other way.
+- Requests from other websites are rejected (Go's `http.CrossOriginProtection`), and responses carry a strict Content-Security-Policy, `X-Frame-Options: DENY` and `nosniff`.
 - The OAuth scope is the full `youtube` scope because unsubscribing requires it.
 
 ## Development
