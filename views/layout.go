@@ -154,7 +154,8 @@ func Ago(t time.Time) string {
 	return fmt.Sprintf("%.1fy ago", d.Hours()/24/365)
 }
 
-func plural(n int, one, many string) string {
+// Plural formats a count with its noun: "1 video", "3 videos".
+func Plural(n int, one, many string) string {
 	if n == 1 {
 		return "1 " + one
 	}

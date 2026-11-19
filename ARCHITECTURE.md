@@ -18,8 +18,9 @@ internal/server ── middleware: /healthz, security headers, password, CSRF
 ```
 
 The server renders HTML on the server and the browser swaps it in with HTMX.
-There is no JSON API and no client-side framework: `static/app.js` only turns
-failed requests into toasts.
+There is no JSON API and no client-side framework. `static/app.js` does two
+small things: it turns failed requests into toasts, and it runs row selection
+for bulk actions (see below).
 
 ## Layout
 
@@ -76,6 +77,25 @@ HTMX conventions used throughout:
   `X-Error-Title` header, which `static/app.js` shows as a toast.
 - **Full page loads of fragment URLs** (e.g. a refresh after `hx-push-url`)
   check the `HX-Request` header and render the whole page instead.
+
+## Bulk actions
+
+Each list row has a checkbox (`name="ids"`, `data-select="row"`). Group
+headings (`data-select="group"`) and **Select all N shown**
+(`data-select="all"`, scoped by `data-select-scope` on the list) tick every
+row in their scope. `static/app.js` shows the `#bulk` bar (`bulkBar` in
+`views/layout.templ`) while anything is ticked. It fills each button's
+`hx-confirm` from its `data-confirm` template, using the quota left on
+`#summary`.
+
+The bar's buttons post `action` plus the ticked `ids` (via `hx-include`) to
+`POST /channels/bulk` or `POST /playlists/bulk`. Decisions are saved in one
+transaction and the page refreshes. YouTube changes run as a background job
+that goes through the same quota-limited loops as **Unsubscribe from all** and
+**Clean up all playlists**.
+
+To add a bulk action, add a case to `handleChannelBulk` or
+`handlePlaylistBulk` and a button to the page's bulk bar.
 
 ## Background jobs
 

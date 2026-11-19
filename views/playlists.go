@@ -77,8 +77,8 @@ func (s PlaylistStats) Pct(n int) string {
 func (s PlaylistStats) CleanAllNote() string {
 	cost := s.Cleanable() * youtube.CostWrite
 	note := fmt.Sprintf("Removes %s and %s across your playlists for about %s quota units",
-		plural(s.Unavailable, "unavailable video", "unavailable videos"),
-		plural(s.Duplicates, "duplicate", "duplicates"), Thousands(cost))
+		Plural(s.Unavailable, "unavailable video", "unavailable videos"),
+		Plural(s.Duplicates, "duplicate", "duplicates"), Thousands(cost))
 	if cost > s.QuotaRemaining() {
 		return fmt.Sprintf("%s; today's quota covers %d of them.", note, s.QuotaRemaining()/youtube.CostWrite)
 	}
@@ -224,7 +224,7 @@ func PlaylistProblems(p store.Playlist) string {
 		parts = append(parts, fmt.Sprintf("%d unavailable", p.Unavailable))
 	}
 	if n := len(p.Duplicates); n > 0 {
-		parts = append(parts, plural(n, "duplicate", "duplicates"))
+		parts = append(parts, Plural(n, "duplicate", "duplicates"))
 	}
 	return strings.Join(parts, " · ")
 }
@@ -235,7 +235,7 @@ func PlaylistOverlapNote(p store.Playlist) string {
 		return ""
 	}
 	o := p.Overlaps[0]
-	return fmt.Sprintf("shares %s with %s", plural(o.Shared, "video", "videos"), o.Title)
+	return fmt.Sprintf("shares %s with %s", Plural(o.Shared, "video", "videos"), o.Title)
 }
 
 func Privacy(p store.Playlist) string {

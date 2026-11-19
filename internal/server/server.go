@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -105,6 +106,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /analyze", s.handleAnalyze)
 	mux.HandleFunc("DELETE /channels/{id}", s.handleUnsubscribe)
 	mux.HandleFunc("POST /unsubscribe-suggested", s.handleBulkUnsubscribe)
+	mux.HandleFunc("POST /channels/bulk", s.handleChannelBulk)
 	mux.HandleFunc("POST /channels/{id}/keep", s.handleDecision(store.VerdictKeep))
 	mux.HandleFunc("DELETE /channels/{id}/keep", s.handleDecision(""))
 	mux.HandleFunc("POST /interests", s.handleInterests)
@@ -121,6 +123,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /playlists/{id}/keep", s.handlePlaylistDecision(store.PlaylistKeep))
 	mux.HandleFunc("DELETE /playlists/{id}/keep", s.handlePlaylistDecision(""))
 	mux.HandleFunc("DELETE /playlists/{id}", s.handlePlaylistDelete)
+	mux.HandleFunc("POST /playlists/bulk", s.handlePlaylistBulk)
 
 	// Background jobs (jobs.go) and sign-in (auth.go)
 	mux.HandleFunc("GET /job", s.handleJob)
@@ -159,6 +162,34 @@ func (s *Server) ensureQuota(ctx context.Context, units int) error {
 		return fmt.Errorf("that needs %d YouTube API units but only about %d are left today; quota resets at midnight Pacific time", units, max(0, left))
 	}
 	return nil
+}
+
+// selectedIDs returns the IDs ticked on the page (form field "ids"). It
+// writes an error and returns false when none were sent.
+func selectedIDs(w http.ResponseWriter, r *http.Request, noun string) ([]string, bool) {
+	if err := r.ParseForm(); err != nil {
+		fail(w, http.StatusBadRequest, "Couldn't read the selection", err)
+		return nil, false
+	}
+	var ids []string
+	for _, id := range r.PostForm["ids"] {
+		if id = strings.TrimSpace(id); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		fail(w, http.StatusBadRequest, "Nothing selected", fmt.Errorf("select one or more %s first", noun))
+		return nil, false
+	}
+	return ids, true
+}
+
+func set(ids []string) map[string]bool {
+	m := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		m[id] = true
+	}
+	return m
 }
 
 // fail writes a plain-text error; static/app.js shows it as a toast with the given title.
