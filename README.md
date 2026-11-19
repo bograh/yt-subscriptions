@@ -49,6 +49,7 @@ You need [Go](https://go.dev/dl/) (the version in `go.mod`), `make` and `curl`.
 5. Decide:
    - **Keep** pins a channel. Your decision beats the AI's, survives re-syncs, and those channels are never re-analyzed. **Undo** clears it.
    - **Unsubscribe** on a row, or **Unsubscribe from all N** for every channel still marked Unsubscribe (channels you kept are skipped).
+   - **Select several:** tick rows, a whole group, or **Select all N shown** (whatever the current filter and search show). A bar at the bottom then offers **Keep**, **Undo keep** and **Unsubscribe** for the selection, whatever the AI suggested. Esc or **Clear** clears it.
 
 ### Playlists
 
@@ -60,13 +61,14 @@ You need [Go](https://go.dev/dl/) (the version in `go.mod`), `make` and `curl`.
    - **Clean up** removes unavailable videos and duplicates from one playlist; **Clean up all playlists** does every one. Each removal is 50 units.
    - **Merge** copies the videos the target doesn't already have, deletes the source playlist, then re-syncs. The confirmation shows the exact cost.
    - **Delete** removes the playlist from YouTube (the videos themselves are unaffected).
+   - **Select several** works as for subscriptions, with **Keep**, **Undo keep**, **Clean up** and **Delete** for the selection.
 
 YouTube's API doesn't expose Liked videos or Watch Later, so those aren't included.
 
 ## How it behaves
 
 - **Storage:** everything lives in SQLite at `data/app.db` (`DATA_DIR`), created private to your user. Schema changes are numbered migrations. Data from the old `state.json`/`token.json` format is imported on first start.
-- **Quota:** YouTube allows 10,000 API units a day by default (`YOUTUBE_DAILY_QUOTA`). Reading is cheap (a subscriptions sync is about 1 unit per channel; a playlists sync about 1 per 50 videos). Every change costs 50: an unsubscribe, a playlist deletion, and each video removed from or added to a playlist. The dashboard keeps a running estimate for the current quota day (midnight to midnight Pacific time), refuses actions that wouldn't fit, and stops bulk actions before the quota runs out. If YouTube reports the quota is used up mid-sync, nothing is overwritten.
+- **Quota:** YouTube allows 10,000 API units a day by default (`YOUTUBE_DAILY_QUOTA`). Reading is cheap (a subscriptions sync is about 1 unit per channel; a playlists sync about 1 per 50 videos). Every change costs 50: an unsubscribe, a playlist deletion, and each video removed from or added to a playlist. The dashboard keeps a running estimate for the current quota day (midnight to midnight Pacific time), refuses actions that wouldn't fit, and stops bulk actions before the quota runs out. Bulk confirmations show the cost first. If YouTube reports the quota is used up mid-sync, nothing is overwritten.
 - **Errors:** failed actions show as toasts. A sync that couldn't fetch uploads for a few channels keeps their previous data and says so.
 - **Weekly re-login:** while your Google Cloud app is in *Testing* status, Google expires its login after 7 days. The dashboard notices, forgets the token and shows **Connect YouTube** again. Publishing the app (it can stay unverified for personal use) removes the limit. **Disconnect** revokes the token.
 - **AI calls:** batches of 25 channels or 20 playlists, a few at a time, with retries for rate limits, server errors and items the model skipped. Set `AI_JSON_MODE=1` if your provider supports `response_format: json_object`. Channel and playlist titles and descriptions are treated as untrusted data in the prompt.
