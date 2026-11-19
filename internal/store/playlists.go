@@ -276,14 +276,12 @@ func (s *Store) SavePlaylistAnalyses(ctx context.Context, analyses map[string]Pl
 
 // SetPlaylistDecision records the user's own verdict; "" clears it.
 func (s *Store) SetPlaylistDecision(ctx context.Context, playlistID, verdict string) error {
-	if verdict == "" {
-		_, err := s.db.ExecContext(ctx, `DELETE FROM playlist_decisions WHERE playlist_id = ?`, playlistID)
-		return err
-	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO playlist_decisions (playlist_id, verdict, decided_at) VALUES (?, ?, ?)
-		ON CONFLICT(playlist_id) DO UPDATE SET verdict = excluded.verdict, decided_at = excluded.decided_at`,
-		playlistID, verdict, time.Now().Unix())
-	return err
+	return s.SetPlaylistDecisions(ctx, []string{playlistID}, verdict)
+}
+
+// SetPlaylistDecisions is SetPlaylistDecision for several playlists at once, in one transaction.
+func (s *Store) SetPlaylistDecisions(ctx context.Context, playlistIDs []string, verdict string) error {
+	return setDecisions(ctx, s, "playlist_decisions", "playlist_id", playlistIDs, verdict)
 }
 
 // DeletePlaylist forgets a playlist deleted on YouTube, with its items, analysis and decision.

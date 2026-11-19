@@ -292,14 +292,39 @@ func (s *Store) SaveAnalyses(ctx context.Context, analyses map[string]Analysis) 
 // SetDecision records the user's own verdict for a channel; "" clears it.
 // Decisions are kept by channel ID, so they survive re-syncs and re-subscribing.
 func (s *Store) SetDecision(ctx context.Context, channelID, verdict string) error {
-	if verdict == "" {
-		_, err := s.db.ExecContext(ctx, `DELETE FROM decisions WHERE channel_id = ?`, channelID)
-		return err
+	return s.SetDecisions(ctx, []string{channelID}, verdict)
+}
+
+// SetDecisions is SetDecision for several channels at once, in one transaction.
+func (s *Store) SetDecisions(ctx context.Context, channelIDs []string, verdict string) error {
+	return setDecisions(ctx, s, "decisions", "channel_id", channelIDs, verdict)
+}
+
+// setDecisions upserts (or, with "", deletes) one decision per ID in table.
+func setDecisions(ctx context.Context, s *Store, table, idColumn string, ids []string, verdict string) error {
+	query := `DELETE FROM ` + table + ` WHERE ` + idColumn + ` = ?`
+	if verdict != "" {
+		query = `INSERT INTO ` + table + ` (` + idColumn + `, verdict, decided_at) VALUES (?, ?, ?)
+		ON CONFLICT(` + idColumn + `) DO UPDATE SET verdict = excluded.verdict, decided_at = excluded.decided_at`
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO decisions (channel_id, verdict, decided_at) VALUES (?, ?, ?)
-		ON CONFLICT(channel_id) DO UPDATE SET verdict = excluded.verdict, decided_at = excluded.decided_at`,
-		channelID, verdict, time.Now().Unix())
-	return err
+	now := time.Now().Unix()
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		stmt, err := tx.Prepare(query)
+		if err != nil {
+			return err
+		}
+		defer stmt.Close()
+		for _, id := range ids {
+			args := []any{id}
+			if verdict != "" {
+				args = append(args, verdict, now)
+			}
+			if _, err := stmt.Exec(args...); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // DeleteChannel removes a channel from the subscription list after unsubscribing.
