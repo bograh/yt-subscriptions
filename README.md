@@ -3,7 +3,7 @@
 A small local dashboard (Go + Templ + HTMX + Tailwind) that pulls your YouTube
 subscriptions, uses an OpenAI-compatible model to group them by **category** and
 **kind of videos**, and suggests **keep / review / unsubscribe** for each one.
-You can unsubscribe straight from the dashboard.
+You decide; the dashboard unsubscribes for you.
 
 ## Setup
 
@@ -13,44 +13,52 @@ You can unsubscribe straight from the dashboard.
    - Under Credentials, create an OAuth client ID of type **Web application** with this redirect URI:
      `http://localhost:8080/auth/callback`
 2. Copy `.env.example` to `.env` and fill in the Google client and AI settings.
-3. Run:
-   ```sh
-   go tool templ generate
-   go run .
-   ```
-   Open http://localhost:8080.
+3. Run `make run` and open http://localhost:8080.
 
-### Make
-
-`make run` builds and runs the app. `make dev` runs it with live reload. `make help` lists every target.
+`make run` builds the templates and CSS (it downloads the pinned Tailwind CLI into `bin/` the first time) and starts the server.
+`make dev` does the same with live reload; open the proxy at http://localhost:7331.
+`make help` lists every target.
 
 ### Docker
 
 ```sh
 make docker-build
-make docker-run   # uses .env and stores data in the "yt-subscriptions-data" volume
+make docker-run   # uses .env, publishes on 127.0.0.1 only, keeps data in the "yt-subscriptions-data" volume
 ```
 
 If you change the port (`make docker-run PORT=9090`), add the new redirect URI to your Google OAuth client too.
 
 ## Using it
 
-1. **Connect YouTube**, then **Sync subscriptions**. This fetches channels, stats, and their recent uploads.
-2. Optional: open *Personalize the suggestions*.
-   - Describe your current interests.
-   - Upload `watch-history.json` from [Google Takeout](https://takeout.google.com/) (YouTube, history, JSON format) so the AI knows what you actually watch.
-3. Click **Analyze new**. Only channels that haven't been analyzed yet are sent. Use **Re-analyze all** after changing your interests or history.
-4. Group by Category, Kind of videos, or Suggestion. Filter, search, and unsubscribe.
+1. **Connect YouTube**, then **Sync**. This fetches your channels, their stats and recent uploads.
+2. Optional, recommended: open **Tune the suggestions**.
+   - Describe what you're into now.
+   - Import your watch history from [Google Takeout](https://takeout.google.com/) (YouTube → history). Both the default HTML export and the JSON export work. YouTube's API can't tell which channels you actually watch; this can.
+3. Click **Analyze new**. It only sends channels that were never analyzed, or whose suggestion is **outdated** because your interests or watch history changed since. **Re-analyze all** redoes everything.
+4. Group by category, kind of videos or suggestion; filter and search.
+5. Decide:
+   - **Keep** pins a channel. Your decision beats the AI's, survives re-syncs, and those channels are never re-analyzed. **Undo** clears it.
+   - **Unsubscribe** on a row, or **Unsubscribe from all N** for every channel still marked Unsubscribe (channels you kept are skipped).
 
-Everything (channels, AI analyses, watch stats, settings, OAuth token) is stored in SQLite at `data/app.db`.
-Analyses are kept per channel in their own table, so syncing, unsubscribing or re-subscribing never throws them away.
-Only **Re-analyze all** spends AI calls on channels that were already categorized.
-If you used an earlier version that stored data in `state.json`/`token.json`, that data is imported automatically on first start.
+## How it behaves
 
-## Notes
+- **Storage:** everything lives in SQLite at `data/app.db` (`DATA_DIR`), created private to your user. Schema changes are numbered migrations. Data from the old `state.json`/`token.json` format is imported on first start.
+- **Quota:** YouTube allows 10,000 API units a day by default (`YOUTUBE_DAILY_QUOTA`). A sync costs about 1 unit per channel and each unsubscribe costs 50. The dashboard keeps a running estimate for the current quota day (midnight to midnight Pacific time), refuses unsubscribes that wouldn't fit, and stops a bulk unsubscribe before the quota runs out. If YouTube reports the quota is used up mid-sync, nothing is overwritten.
+- **Errors:** failed actions show as toasts. A sync that couldn't fetch uploads for a few channels keeps their previous data and says so.
+- **Weekly re-login:** while your Google Cloud app is in *Testing* status, Google expires its login after 7 days. The dashboard notices, forgets the token and shows **Connect YouTube** again. Publishing the app (it can stay unverified for personal use) removes the limit. **Disconnect** revokes the token.
+- **AI calls:** batches of 25 channels, a few at a time, with retries for rate limits, server errors and channels the model skipped. Set `AI_JSON_MODE=1` if your provider supports `response_format: json_object`. Channel titles and descriptions are treated as untrusted data in the prompt.
 
-- **API quota:** a sync uses roughly 1 unit per channel. Each unsubscribe costs 50 units. The default daily quota is 10,000.
-- **OAuth scope:** the app asks for the full `youtube` scope because unsubscribing requires it.
-- **Weekly re-login:** while your Google Cloud app is in *Testing* status, Google expires its login after 7 days. The dashboard notices this, forgets the token and shows **Connect YouTube** again. Publishing the app (it can stay unverified for personal use) removes the limit. **Disconnect** in the header revokes the token.
-- **Tailwind:** loaded with the Tailwind browser build to keep things simple. For anything beyond local use, switch to the Tailwind CLI.
-- **Templates:** after editing `.templ` files, re-run `go tool templ generate`, or run `go tool templ generate --watch --proxy=http://localhost:8080 --cmd="go run ."` for live reload.
+## Security
+
+The dashboard can unsubscribe you from channels, so:
+
+- It listens on `127.0.0.1` unless you set `HOST`. `make docker-run` publishes on `127.0.0.1` only.
+- Requests from other websites are rejected (Go's `http.CrossOriginProtection`).
+- Set `DASHBOARD_PASSWORD` to require a password (HTTP basic auth, any username). The app warns at startup if it's reachable from other machines without one.
+- The OAuth scope is the full `youtube` scope because unsubscribing requires it.
+
+## Development
+
+- `make check` formats, vets, tests and builds.
+- Templates are in `views/*.templ`; run `make generate` (or `make dev`) after editing them. Styles and design tokens are in `styles/input.css`; `make css` rebuilds `static/app.css`. Commit the generated files: CI fails if they're out of date.
+- Fonts: [Geist and Geist Mono](https://vercel.com/font), SIL Open Font License (`static/fonts/OFL.txt`).
