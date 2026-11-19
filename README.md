@@ -1,9 +1,14 @@
-# YouTube Subscription Cleanup
+# YouTube Cleanup
 
-A small local dashboard (Go + Templ + HTMX + Tailwind) that pulls your YouTube
-subscriptions, uses an OpenAI-compatible model to group them by **category** and
-**kind of videos**, and suggests **keep / review / unsubscribe** for each one.
-You decide; the dashboard unsubscribes for you.
+A small dashboard (Go + Templ + HTMX + Tailwind) for tidying your YouTube account
+with an OpenAI-compatible model:
+
+- **Subscriptions:** grouped by **category** and **kind of videos**, each with a
+  **keep / review / unsubscribe** suggestion.
+- **Playlists:** grouped by topic, each with a **keep / review / delete / merge**
+  suggestion, plus deleted or private videos, duplicates and overlaps flagged.
+
+You decide; the dashboard makes the changes for you.
 
 ## Setup
 
@@ -69,10 +74,23 @@ The compose file runs the app read-only, with all capabilities dropped and `no-n
    - **Keep** pins a channel. Your decision beats the AI's, survives re-syncs, and those channels are never re-analyzed. **Undo** clears it.
    - **Unsubscribe** on a row, or **Unsubscribe from all N** for every channel still marked Unsubscribe (channels you kept are skipped).
 
+### Playlists
+
+1. Open **Playlists** and click **Sync**. It imports every playlist and all of its videos (about 1 quota unit per 50 videos).
+2. **Analyze new** asks the AI for a topic and a verdict per playlist, using the same interests as Subscriptions. A merge suggestion always names an existing target playlist.
+3. Each row shows problems in red (unavailable videos, duplicates, empty) and, muted, the playlist it shares the most videos with. The **Has problems** filter shows only those.
+4. Act:
+   - **Keep** / **Undo**, as for subscriptions.
+   - **Clean up** removes unavailable videos and duplicates from one playlist; **Clean up all playlists** does every one. Each removal is 50 units.
+   - **Merge** copies the videos the target doesn't already have, deletes the source playlist, then re-syncs. The confirmation shows the exact cost.
+   - **Delete** removes the playlist from YouTube (the videos themselves are unaffected).
+
+YouTube's API doesn't expose Liked videos or Watch Later, so those aren't included.
+
 ## How it behaves
 
 - **Storage:** everything lives in SQLite at `data/app.db` (`DATA_DIR`), created private to your user. Schema changes are numbered migrations. Data from the old `state.json`/`token.json` format is imported on first start.
-- **Quota:** YouTube allows 10,000 API units a day by default (`YOUTUBE_DAILY_QUOTA`). A sync costs about 1 unit per channel and each unsubscribe costs 50. The dashboard keeps a running estimate for the current quota day (midnight to midnight Pacific time), refuses unsubscribes that wouldn't fit, and stops a bulk unsubscribe before the quota runs out. If YouTube reports the quota is used up mid-sync, nothing is overwritten.
+- **Quota:** YouTube allows 10,000 API units a day by default (`YOUTUBE_DAILY_QUOTA`). Reading is cheap (a subscriptions sync is about 1 unit per channel; a playlists sync about 1 per 50 videos). Every change costs 50: an unsubscribe, a playlist deletion, and each video removed from or added to a playlist. The dashboard keeps a running estimate for the current quota day (midnight to midnight Pacific time), refuses unsubscribes that wouldn't fit, and stops a bulk unsubscribe before the quota runs out. If YouTube reports the quota is used up mid-sync, nothing is overwritten.
 - **Errors:** failed actions show as toasts. A sync that couldn't fetch uploads for a few channels keeps their previous data and says so.
 - **Weekly re-login:** while your Google Cloud app is in *Testing* status, Google expires its login after 7 days. The dashboard notices, forgets the token and shows **Connect YouTube** again. Publishing the app (it can stay unverified for personal use) removes the limit. **Disconnect** revokes the token.
 - **AI calls:** batches of 25 channels, a few at a time, with retries for rate limits, server errors and channels the model skipped. Set `AI_JSON_MODE=1` if your provider supports `response_format: json_object`. Channel titles and descriptions are treated as untrusted data in the prompt.
