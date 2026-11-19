@@ -121,7 +121,23 @@ func Open(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	dsn := "file:" + filepath.Join(dir, "app.db") +
+	// The database holds the OAuth token: keep the folder and files private to this user.
+	// SQLite creates the -wal/-shm files with the main file's permissions.
+	dbPath := filepath.Join(dir, "app.db")
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(dbPath, os.O_RDONLY|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	f.Close()
+	for _, p := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
+		if err := os.Chmod(p, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+	}
+	dsn := "file:" + dbPath +
 		"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {

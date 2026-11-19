@@ -42,6 +42,6 @@ docker-build: ## Build the Docker image
 	docker build -t $(IMAGE) .
 
 docker-run: ## Run the image with .env and a persistent data volume
-	docker run --rm -it -p $(PORT):8080 --env-file .env \
+	docker run --rm -it -p 127.0.0.1:$(PORT):8080 --env-file .env \
 		-e OAUTH_REDIRECT_URL=http://localhost:$(PORT)/auth/callback \
 		-v $(APP)-data:/data $(IMAGE)

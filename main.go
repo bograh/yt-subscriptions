@@ -44,9 +44,15 @@ func main() {
 		oauthStates: map[string]time.Time{},
 	}
 
+	host := cmp.Or(os.Getenv("HOST"), "127.0.0.1")
+	password := os.Getenv("DASHBOARD_PASSWORD")
+	if !isLoopback(host) && password == "" {
+		log.Printf("WARNING: listening on %s without DASHBOARD_PASSWORD; anyone who can reach this port can manage your subscriptions", host)
+	}
+
 	srv := &http.Server{
-		Addr:              cmp.Or(os.Getenv("HOST"), "127.0.0.1") + ":" + port,
-		Handler:           app.routes(),
+		Addr:              host + ":" + port,
+		Handler:           secure(app.routes(), password),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	log.Printf("dashboard on http://localhost:%s", port)
