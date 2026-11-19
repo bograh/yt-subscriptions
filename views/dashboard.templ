@@ -225,7 +225,20 @@ templ Summary(s Stats, oob bool) {
 				if s.HistoryImported {
 					<li>{ fmt.Sprint(s.NeverWatched) } never watched</li>
 				}
+				<li title="Estimated YouTube Data API units used today. Resets at midnight Pacific time.">quota { Thousands(s.QuotaUsed) } / { Thousands(s.QuotaLimit) } today</li>
 			</ul>
+			if s.Unsubscribe > 0 {
+				<div class="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2">
+					<button
+						hx-post="/unsubscribe-suggested"
+						hx-target="#job"
+						hx-swap="outerHTML"
+						hx-confirm={ fmt.Sprintf("Unsubscribe from all %d channels marked Unsubscribe? This uses about %s of your %s remaining quota units. Channels you chose to keep are skipped.", s.Unsubscribe, Thousands(s.BulkCost()), Thousands(s.QuotaRemaining())) }
+						class="btn btn-drop"
+					>Unsubscribe from all { fmt.Sprint(s.Unsubscribe) }</button>
+					<p class="text-sm text-muted">{ s.BulkNote() }</p>
+				</div>
+			}
 		}
 	</section>
 }

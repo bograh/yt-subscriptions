@@ -9,9 +9,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
+	_ "time/tzdata" // quota day is Pacific time; distroless images have no zoneinfo
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
@@ -50,6 +52,7 @@ func main() {
 			HTTP:    &http.Client{Timeout: 3 * time.Minute},
 		},
 		oauthStates: map[string]time.Time{},
+		quotaLimit:  envInt("YOUTUBE_DAILY_QUOTA", 10_000),
 	}
 
 	host := cmp.Or(os.Getenv("HOST"), "127.0.0.1")
@@ -79,6 +82,13 @@ func main() {
 	if err := st.Close(); err != nil {
 		log.Printf("close store: %v", err)
 	}
+}
+
+func envInt(key string, def int) int {
+	if v, err := strconv.Atoi(os.Getenv(key)); err == nil && v > 0 {
+		return v
+	}
+	return def
 }
 
 // loadDotEnv sets KEY=VALUE pairs from a .env file without overriding the real environment.

@@ -39,6 +39,7 @@ type Page struct {
 type Stats struct {
 	Total, Keep, Review, Unsubscribe, Unanalyzed, Inactive, NeverWatched int
 	Outdated                                                             int
+	QuotaUsed, QuotaLimit                                                int
 	HistoryImported                                                      bool
 }
 
@@ -55,8 +56,8 @@ type List struct {
 	Shown   int
 }
 
-func ComputeStats(st store.State) Stats {
-	s := Stats{Total: len(st.Channels), HistoryImported: st.HistoryImported}
+func ComputeStats(st store.State, quotaLimit int) Stats {
+	s := Stats{Total: len(st.Channels), HistoryImported: st.HistoryImported, QuotaUsed: st.QuotaUsed, QuotaLimit: quotaLimit}
 	for _, c := range st.Channels {
 		switch c.Verdict() {
 		case "":
@@ -120,7 +121,7 @@ func BuildList(channels []store.Channel, groupBy, verdict, query string) List {
 			if vi != vj {
 				return vi < vj
 			}
-			return strings.ToLower(chs[i].Title) < strings.ToLower(chs[j].Title)
+			return naturalLess(chs[i].Title, chs[j].Title)
 		})
 		l.Groups = append(l.Groups, Group{Name: name, Channels: chs})
 	}
@@ -128,9 +129,45 @@ func BuildList(channels []store.Channel, groupBy, verdict, query string) List {
 		if len(l.Groups[i].Channels) != len(l.Groups[j].Channels) {
 			return len(l.Groups[i].Channels) > len(l.Groups[j].Channels)
 		}
-		return l.Groups[i].Name < l.Groups[j].Name
+		return naturalLess(l.Groups[i].Name, l.Groups[j].Name)
 	})
 	return l
+}
+
+// naturalLess compares case-insensitively with digit runs as numbers,
+// so "Channel 3" sorts before "Channel 15".
+func naturalLess(a, b string) bool {
+	a, b = strings.ToLower(a), strings.ToLower(b)
+	for a != "" && b != "" {
+		if isDigit(a[0]) && isDigit(b[0]) {
+			na, ra := digitRun(a)
+			nb, rb := digitRun(b)
+			ta, tb := strings.TrimLeft(na, "0"), strings.TrimLeft(nb, "0")
+			if len(ta) != len(tb) {
+				return len(ta) < len(tb)
+			}
+			if ta != tb {
+				return ta < tb
+			}
+			a, b = ra, rb
+			continue
+		}
+		if a[0] != b[0] {
+			return a[0] < b[0]
+		}
+		a, b = a[1:], b[1:]
+	}
+	return len(a) < len(b)
+}
+
+func isDigit(c byte) bool { return c >= '0' && c <= '9' }
+
+func digitRun(s string) (run, rest string) {
+	i := 0
+	for i < len(s) && isDigit(s[i]) {
+		i++
+	}
+	return s[:i], s[i:]
 }
 
 func verdictOf(c store.Channel) string { return c.Verdict() }
@@ -168,6 +205,20 @@ func (s Stats) Pct(n int) string {
 	return fmt.Sprintf("%.3f%%", float64(n)*100/float64(s.Total))
 }
 
+func (s Stats) QuotaRemaining() int { return max(0, s.QuotaLimit-s.QuotaUsed) }
+
+// BulkCost is the quota a bulk unsubscribe of every suggested channel would use.
+func (s Stats) BulkCost() int { return s.Unsubscribe * 50 }
+
+// BulkNote explains the cost of "Unsubscribe from all".
+func (s Stats) BulkNote() string {
+	note := "Review the list first. Each unsubscribe costs 50 quota units"
+	if s.BulkCost() > s.QuotaRemaining() {
+		return fmt.Sprintf("%s, so today's quota covers %d of them.", note, s.QuotaRemaining()/50)
+	}
+	return note + "."
+}
+
 // Pending is how many channels "Analyze new" will send: never analyzed or outdated.
 func (s Stats) Pending() int { return s.Unanalyzed + s.Outdated }
 
@@ -181,6 +232,18 @@ func Compact(n int64) string {
 		return trimZero(fmt.Sprintf("%.1f", float64(n)/1_000)) + "K"
 	}
 	return fmt.Sprint(n)
+}
+
+// Thousands formats n with comma separators: 10000 -> "10,000".
+func Thousands(n int) string {
+	str := fmt.Sprint(n)
+	if n < 0 {
+		return "-" + Thousands(-n)
+	}
+	for i := len(str) - 3; i > 0; i -= 3 {
+		str = str[:i] + "," + str[i:]
+	}
+	return str
 }
 
 func trimZero(s string) string { return strings.TrimSuffix(s, ".0") }

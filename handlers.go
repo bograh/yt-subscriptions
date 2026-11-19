@@ -38,6 +38,8 @@ type App struct {
 	lastWarn    string
 	flash       string // one-time notice, cleared once shown
 	oauthStates map[string]time.Time
+	quotaLimit  int // YouTube API units per day (YOUTUBE_DAILY_QUOTA)
+	ytBase      string // YouTube API base URL override (tests)
 }
 
 func (a *App) routes() http.Handler {
@@ -46,6 +48,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("GET /{$}", a.handleIndex)
 	mux.HandleFunc("GET /channels", a.handleChannels)
 	mux.HandleFunc("DELETE /channels/{id}", a.handleUnsubscribe)
+	mux.HandleFunc("POST /unsubscribe-suggested", a.handleBulkUnsubscribe)
 	mux.HandleFunc("POST /channels/{id}/keep", a.handleDecision(store.VerdictKeep))
 	mux.HandleFunc("DELETE /channels/{id}/keep", a.handleDecision(""))
 	mux.HandleFunc("GET /job", a.handleJob)
@@ -80,7 +83,7 @@ func (a *App) page(r *http.Request) (views.Page, error) {
 		Error:        lastErr,
 		Warning:      lastWarn,
 		Flash:        flash,
-		Stats:        views.ComputeStats(st),
+		Stats:        views.ComputeStats(st, a.quotaLimit),
 		List:         views.BuildList(st.Channels, q.Get("group"), q.Get("verdict"), q.Get("q")),
 	}, nil
 }
@@ -269,6 +272,10 @@ func (a *App) handleUnsubscribe(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusNotFound, title, errors.New("that channel isn't in your synced subscriptions"))
 		return
 	}
+	if err := a.ensureQuota(r.Context(), youtube.CostUnsubscribe); err != nil {
+		fail(w, http.StatusTooManyRequests, title, err)
+		return
+	}
 	yt, err := a.youtube()
 	if err != nil {
 		fail(w, http.StatusUnauthorized, title, err)
@@ -293,7 +300,7 @@ func (a *App) handleUnsubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Empty body removes the card; stats are refreshed out-of-band.
-	render(w, r, views.Summary(views.ComputeStats(st), true))
+	render(w, r, views.Summary(views.ComputeStats(st, a.quotaLimit), true))
 }
 
 // handleDecision pins (or, with "", clears) the user's own verdict for a channel
@@ -314,12 +321,80 @@ func (a *App) handleDecision(verdict string) http.HandlerFunc {
 		for _, c := range st.Channels {
 			if c.ID == id {
 				render(w, r, views.ChannelRow(c))
-				render(w, r, views.Summary(views.ComputeStats(st), true))
+				render(w, r, views.Summary(views.ComputeStats(st, a.quotaLimit), true))
 				return
 			}
 		}
 		fail(w, http.StatusNotFound, title, errors.New("that channel isn't in your synced subscriptions"))
 	}
+}
+
+// ensureQuota refuses work that would exceed today's estimated YouTube quota.
+func (a *App) ensureQuota(ctx context.Context, units int) error {
+	st, err := a.store.Snapshot(ctx)
+	if err != nil {
+		return err
+	}
+	if left := a.quotaLimit - st.QuotaUsed; units > left {
+		return fmt.Errorf("that needs %d YouTube API units but only about %d are left today; quota resets at midnight Pacific time", units, max(0, left))
+	}
+	return nil
+}
+
+// handleBulkUnsubscribe unsubscribes from every channel whose effective verdict is
+// "unsubscribe", as a background job, stopping before the daily quota runs out.
+func (a *App) handleBulkUnsubscribe(w http.ResponseWriter, r *http.Request) {
+	yt, err := a.youtube()
+	if err != nil {
+		fail(w, http.StatusUnauthorized, "Can't unsubscribe", err)
+		return
+	}
+	a.startJob(w, r, "Unsubscribing from suggested channels", func(ctx context.Context, progress func(int, int)) error {
+		st, err := a.store.Snapshot(ctx)
+		if err != nil {
+			return err
+		}
+		var todo []store.Channel
+		for _, c := range st.Channels {
+			if c.Verdict() == store.VerdictUnsubscribe {
+				todo = append(todo, c)
+			}
+		}
+		affordable := max(0, a.quotaLimit-st.QuotaUsed) / youtube.CostUnsubscribe
+		skipped := 0
+		if len(todo) > affordable {
+			skipped = len(todo) - affordable
+			todo = todo[:affordable]
+		}
+		progress(0, len(todo))
+		var failed []string
+		for i, c := range todo {
+			if err := yt.Unsubscribe(ctx, c.SubscriptionID); err != nil {
+				if err = a.checkAuth(err); errors.Is(err, ErrReconnect) {
+					return err
+				}
+				var apiErr *youtube.APIError
+				if errors.As(err, &apiErr) && apiErr.QuotaExceeded() {
+					skipped += len(todo) - i
+					break
+				}
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				failed = append(failed, c.Title)
+			} else if err := a.store.DeleteChannel(ctx, c.ID); err != nil {
+				return err
+			}
+			progress(i+1, len(todo))
+		}
+		switch {
+		case len(failed) > 0:
+			return fmt.Errorf("couldn't unsubscribe from %d channel(s): %s", len(failed), strings.Join(failed, ", "))
+		case skipped > 0:
+			a.warn(fmt.Sprintf("Stopped before YouTube's daily quota ran out; %d channel(s) are still marked Unsubscribe. Run it again after midnight Pacific time.", skipped))
+		}
+		return nil
+	})
 }
 
 func (a *App) handleInterests(w http.ResponseWriter, r *http.Request) {
@@ -367,6 +442,11 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	rand.Read(b)
 	state := hex.EncodeToString(b)
 	a.mu.Lock()
+	for s, created := range a.oauthStates { // forget abandoned sign-ins
+		if time.Since(created) > 10*time.Minute {
+			delete(a.oauthStates, s)
+		}
+	}
 	a.oauthStates[state] = time.Now()
 	a.mu.Unlock()
 	http.Redirect(w, r, a.oauth.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.ApprovalForce), http.StatusFound)
@@ -431,7 +511,15 @@ func (a *App) youtube() (*youtube.Client, error) {
 		store: a.store,
 		last:  tok.AccessToken,
 	}
-	return &youtube.Client{HTTP: oauth2.NewClient(context.Background(), ts)}, nil
+	return &youtube.Client{
+		HTTP: oauth2.NewClient(context.Background(), ts),
+		Base: a.ytBase,
+		OnCost: func(units int) {
+			if err := a.store.AddQuotaUsage(context.Background(), units); err != nil {
+				log.Printf("record quota usage: %v", err)
+			}
+		},
+	}, nil
 }
 
 type savingTokenSource struct {

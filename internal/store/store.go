@@ -91,6 +91,8 @@ type State struct {
 	// Basis fingerprints what personalises suggestions (interests + watch-history
 	// import). Analyses made under a different basis are marked Outdated.
 	Basis string
+	// QuotaUsed is our estimate of YouTube API units spent today (Pacific time).
+	QuotaUsed int
 }
 
 func analysisBasis(interests, historyImportedAt string) string {
@@ -109,6 +111,8 @@ const (
 	keyHistoryImported   = "history_imported"
 	keyHistoryImportedAt = "history_imported_at"
 	keyOAuthToken        = "oauth_token"
+	keyQuotaDay          = "quota_day"
+	keyQuotaUsed         = "quota_used"
 )
 
 type Store struct {
@@ -212,6 +216,9 @@ func (s *Store) Snapshot(ctx context.Context) (State, error) {
 	st.Interests = settings[keyInterests]
 	st.HistoryImported = settings[keyHistoryImported] == "1"
 	st.Basis = analysisBasis(st.Interests, settings[keyHistoryImportedAt])
+	if settings[keyQuotaDay] == QuotaDay(time.Now()) {
+		st.QuotaUsed, _ = strconv.Atoi(settings[keyQuotaUsed])
+	}
 	for i := range st.Channels {
 		// An empty basis predates tracking; don't flag those.
 		if a := st.Channels[i].Analysis; a != nil && a.Basis != "" && a.Basis != st.Basis {
@@ -345,6 +352,40 @@ func (s *Store) SaveToken(t *oauth2.Token) error {
 		return err
 	}
 	return s.tx(context.Background(), func(tx *sql.Tx) error { return setSetting(tx, keyOAuthToken, string(b)) })
+}
+
+var pacific = mustLoadLocation("America/Los_Angeles")
+
+func mustLoadLocation(name string) *time.Location {
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		panic(err) // time/tzdata is embedded by package main
+	}
+	return loc
+}
+
+// QuotaDay is the YouTube quota day for t; quotas reset at midnight Pacific time.
+func QuotaDay(t time.Time) string { return t.In(pacific).Format("2006-01-02") }
+
+// AddQuotaUsage adds units to today's running total, resetting on a new quota day.
+func (s *Store) AddQuotaUsage(ctx context.Context, units int) error {
+	if units == 0 {
+		return nil
+	}
+	today := QuotaDay(time.Now())
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		var day, used string
+		tx.QueryRow(`SELECT value FROM settings WHERE key = ?`, keyQuotaDay).Scan(&day)
+		tx.QueryRow(`SELECT value FROM settings WHERE key = ?`, keyQuotaUsed).Scan(&used)
+		n, _ := strconv.Atoi(used)
+		if day != today {
+			n = 0
+		}
+		if err := setSetting(tx, keyQuotaDay, today); err != nil {
+			return err
+		}
+		return setSetting(tx, keyQuotaUsed, strconv.Itoa(n+units))
+	})
 }
 
 // DeleteToken forgets the OAuth token (disconnect, or Google revoked it).

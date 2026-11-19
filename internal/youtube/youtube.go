@@ -26,7 +26,15 @@ const Scope = "https://www.googleapis.com/auth/youtube"
 type Client struct {
 	HTTP *http.Client // must be an OAuth2-authorized client
 	Base string       // API base URL; defaults to the real API (tests override it)
+	// OnCost, if set, is called with the quota units each request costs.
+	OnCost func(units int)
 }
+
+// Quota costs per the YouTube Data API docs: reads are 1 unit, subscriptions.delete 50.
+const (
+	CostRead        = 1
+	CostUnsubscribe = 50
+)
 
 // APIError is a non-2xx response from the YouTube Data API.
 type APIError struct {
@@ -72,6 +80,13 @@ func (c *Client) do(ctx context.Context, method, endpoint string, q url.Values, 
 	req, err := http.NewRequestWithContext(ctx, method, base+endpoint+"?"+q.Encode(), nil)
 	if err != nil {
 		return err
+	}
+	if c.OnCost != nil {
+		cost := CostRead
+		if method == http.MethodDelete {
+			cost = CostUnsubscribe
+		}
+		c.OnCost(cost) // Google bills attempts, including failed ones
 	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {

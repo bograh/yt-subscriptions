@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -196,5 +197,27 @@ func TestDecisionsOverrideAndSurviveResync(t *testing.T) {
 	st, _ = s.Snapshot(ctx)
 	if st.Channels[0].Verdict() != VerdictUnsubscribe {
 		t.Fatal("clearing the decision should fall back to the AI verdict")
+	}
+}
+
+func TestQuotaUsageAccumulatesPerPacificDay(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.AddQuotaUsage(ctx, 50)
+	s.AddQuotaUsage(ctx, 3)
+	if st, _ := s.Snapshot(ctx); st.QuotaUsed != 53 {
+		t.Fatalf("QuotaUsed = %d, want 53", st.QuotaUsed)
+	}
+	// Simulate yesterday's total: it must not count today.
+	s.tx(ctx, func(tx *sql.Tx) error { return setSetting(tx, keyQuotaDay, "2000-01-01") })
+	if st, _ := s.Snapshot(ctx); st.QuotaUsed != 0 {
+		t.Fatalf("stale quota day should read as 0, got %d", st.QuotaUsed)
+	}
+	s.AddQuotaUsage(ctx, 1)
+	if st, _ := s.Snapshot(ctx); st.QuotaUsed != 1 {
+		t.Fatalf("new day should restart the count, got %d", st.QuotaUsed)
 	}
 }
