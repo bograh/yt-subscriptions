@@ -3,10 +3,14 @@ package main
 import (
 	"bufio"
 	"cmp"
+	"context"
+	"errors"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -26,7 +30,11 @@ func main() {
 		log.Fatalf("open store: %v", err)
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	app := &App{
+		ctx:   ctx,
 		store: st,
 		oauth: &oauth2.Config{
 			ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
@@ -55,8 +63,22 @@ func main() {
 		Handler:           secure(app.routes(), password),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	go func() {
+		<-ctx.Done()
+		log.Print("shutting down…")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		srv.Shutdown(shutdownCtx)
+	}()
+
 	log.Printf("dashboard on http://localhost:%s", port)
-	log.Fatal(srv.ListenAndServe())
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatal(err)
+	}
+	app.jobs.Wait() // background jobs see ctx cancelled and stop at their next step
+	if err := st.Close(); err != nil {
+		log.Printf("close store: %v", err)
+	}
 }
 
 // loadDotEnv sets KEY=VALUE pairs from a .env file without overriding the real environment.

@@ -23,6 +23,8 @@ import (
 const analyzeBatchSize = 25
 
 type App struct {
+	ctx   context.Context // cancelled on shutdown; parent of background jobs
+	jobs  sync.WaitGroup
 	store *store.Store
 	oauth *oauth2.Config
 	ai    *ai.Client
@@ -121,8 +123,10 @@ func (a *App) startJob(w http.ResponseWriter, r *http.Request, label string, fn 
 	job := a.job
 	a.mu.Unlock()
 
+	a.jobs.Add(1)
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer a.jobs.Done()
+		ctx, cancel := context.WithTimeout(a.ctx, 30*time.Minute)
 		defer cancel()
 		err := fn(ctx, func(done, total int) {
 			a.mu.Lock()
