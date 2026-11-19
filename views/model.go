@@ -23,6 +23,15 @@ func (j Job) Percent() int {
 	return j.Done * 100 / j.Total
 }
 
+// HeaderData drives the shared page header.
+type HeaderData struct {
+	Active     string // "subscriptions" | "playlists"
+	SyncedAt   time.Time
+	Connected  bool
+	OAuthReady bool
+	Job        Job
+}
+
 type Page struct {
 	State        store.State
 	Connected    bool
@@ -126,6 +135,9 @@ func BuildList(channels []store.Channel, groupBy, verdict, query string) List {
 		l.Groups = append(l.Groups, Group{Name: name, Channels: chs})
 	}
 	sort.Slice(l.Groups, func(i, j int) bool {
+		if groupBy == "verdict" { // action order: Unsubscribe, Review, Keep, Not analyzed
+			return verdictOrder[l.Groups[i].Channels[0].Verdict()] < verdictOrder[l.Groups[j].Channels[0].Verdict()]
+		}
 		if len(l.Groups[i].Channels) != len(l.Groups[j].Channels) {
 			return len(l.Groups[i].Channels) > len(l.Groups[j].Channels)
 		}
@@ -217,6 +229,46 @@ func (s Stats) BulkNote() string {
 		return fmt.Sprintf("%s, so today's quota covers %d of them.", note, s.QuotaRemaining()/50)
 	}
 	return note + "."
+}
+
+// SentencePart is one clause of the summary sentence; Accent marks the
+// destructive suggestion, shown in the accent colour.
+type SentencePart struct {
+	Text   string
+	Accent bool
+}
+
+// sentence builds "Unsubscribe from 3, review 2, keep 5." leaving out zero counts.
+func sentence(parts ...SentencePart) []SentencePart {
+	var out []SentencePart
+	for _, p := range parts {
+		if p.Text != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func punct(i, n int) string {
+	if i == n-1 {
+		return "."
+	}
+	return ","
+}
+
+func clause(n int, format string, accent bool) SentencePart {
+	if n == 0 {
+		return SentencePart{}
+	}
+	return SentencePart{Text: fmt.Sprintf(format, n), Accent: accent}
+}
+
+func (s Stats) Sentence() []SentencePart {
+	return sentence(
+		clause(s.Unsubscribe, "Unsubscribe from %d", true),
+		clause(s.Review, "review %d", false),
+		clause(s.Keep, "keep %d", false),
+	)
 }
 
 // Pending is how many channels "Analyze new" will send: never analyzed or outdated.

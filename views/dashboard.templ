@@ -12,7 +12,7 @@ templ layout() {
 			<meta charset="utf-8"/>
 			<meta name="viewport" content="width=device-width, initial-scale=1"/>
 			<meta name="color-scheme" content="light dark"/>
-			<title>Subscription Cleanup</title>
+			<title>YouTube Cleanup</title>
 			<meta name="htmx-config" content='{"includeIndicatorStyles":false}'/>
 			<link rel="stylesheet" href="/static/app.css"/>
 			<script src="/static/htmx.min.js" defer></script>
@@ -27,58 +27,18 @@ templ layout() {
 
 templ Dashboard(p Page) {
 	@layout() {
-		<header class="border-b border-rule">
-			<div class="mx-auto flex max-w-6xl flex-wrap items-center gap-x-6 gap-y-3 px-4 py-4 sm:px-8">
-				<div class="mr-auto min-w-0">
-					<h1 class="text-[1.0625rem] font-semibold tracking-[-0.01em]">Subscription Cleanup</h1>
-					<p class="text-sm text-muted">
-						if p.State.SyncedAt.IsZero() {
-							Not synced yet
-						} else {
-							Synced { Ago(p.State.SyncedAt) }
-						}
-						if p.Connected {
-							· YouTube connected ·
-							<button hx-post="/auth/logout" hx-confirm="Disconnect YouTube? Your channels and suggestions stay; you'll need to connect again to sync or unsubscribe." class="underline underline-offset-2 hover:text-ink">Disconnect</button>
-						}
-					</p>
-				</div>
-				<div class="flex flex-wrap gap-2">
-					if !p.Connected {
-						<a href="/auth/login" class="btn btn-primary" aria-disabled?={ !p.OAuthReady }>Connect YouTube</a>
-					} else {
-						<button hx-post="/sync" hx-target="#job" hx-swap="outerHTML" class="btn">Sync</button>
-						<button hx-post="/analyze" hx-target="#job" hx-swap="outerHTML" class="btn btn-primary" disabled?={ !p.AIConfigured || len(p.State.Channels) == 0 }>
-							Analyze new
-							if p.Stats.Pending() > 0 {
-								<span class="font-mono text-xs tabular-nums opacity-70">{ fmt.Sprint(p.Stats.Pending()) }</span>
-							}
-						</button>
-						<button hx-post="/analyze?all=1" hx-target="#job" hx-swap="outerHTML" hx-confirm="Send every channel to the AI again? This replaces the current suggestions." class="btn" disabled?={ !p.AIConfigured || len(p.State.Channels) == 0 }>Re-analyze all</button>
-					}
-				</div>
-			</div>
-			@JobBanner(p.Job)
-		</header>
+		@appHeader(HeaderData{Active: "subscriptions", SyncedAt: p.State.SyncedAt, Connected: p.Connected, OAuthReady: p.OAuthReady, Job: p.Job}) {
+			<button hx-post="/sync" hx-target="#job" hx-swap="outerHTML" class="btn">Sync</button>
+			<button hx-post="/analyze" hx-target="#job" hx-swap="outerHTML" class="btn btn-primary" disabled?={ !p.AIConfigured || len(p.State.Channels) == 0 }>
+				Analyze new
+				if p.Stats.Pending() > 0 {
+					<span class="font-mono text-xs tabular-nums opacity-70">{ fmt.Sprint(p.Stats.Pending()) }</span>
+				}
+			</button>
+			<button hx-post="/analyze?all=1" hx-target="#job" hx-swap="outerHTML" hx-confirm="Send every channel to the AI again? This replaces the current suggestions." class="btn" disabled?={ !p.AIConfigured || len(p.State.Channels) == 0 }>Re-analyze all</button>
+		}
 		<main class="mx-auto max-w-6xl px-4 pb-24 sm:px-8">
-			if !p.OAuthReady {
-				@notice("YouTube isn't configured", "Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in .env, then restart. The README walks through creating the OAuth client.")
-			}
-			if !p.AIConfigured {
-				@notice("No AI model configured", "Set AI_MODEL, plus AI_BASE_URL and AI_API_KEY for your provider, in .env to get suggestions.")
-			}
-			if p.Error != "" {
-				<div class="mt-6 rounded-(--radius-control) border border-drop px-4 py-3 text-sm" role="alert">
-					<p class="font-medium text-drop">Last job failed</p>
-					<p class="mt-0.5 text-ink-2">{ p.Error }</p>
-				</div>
-			}
-			if p.Flash != "" {
-				@notice("Done", p.Flash)
-			}
-			if p.Warning != "" {
-				@notice("Heads up", p.Warning)
-			}
+			@pageNotices(p.OAuthReady, p.AIConfigured, p.Error, p.Warning, p.Flash)
 			@Summary(p.Stats, false)
 			@settings(p)
 			<form
@@ -97,9 +57,9 @@ templ Dashboard(p Page) {
 					@groupOption("type", "Kind of videos", p.List.GroupBy)
 					@groupOption("verdict", "Suggestion", p.List.GroupBy)
 				</fieldset>
-				<div class="flex min-w-0 flex-1 flex-wrap items-center gap-3 sm:justify-end">
+				<div class="flex w-full min-w-0 flex-wrap items-center gap-3 sm:w-auto sm:flex-1 sm:justify-end">
 					<label class="sr-only" for="verdict">Show</label>
-					<select id="verdict" name="verdict" class="field pr-8">
+					<select id="verdict" name="verdict" class="field w-full pr-8 sm:w-auto">
 						@verdictOption("", "All suggestions", p.List.Verdict)
 						@verdictOption("unsubscribe", "Unsubscribe", p.List.Verdict)
 						@verdictOption("review", "Review", p.List.Verdict)
@@ -112,6 +72,68 @@ templ Dashboard(p Page) {
 			</form>
 			@ChannelList(p.List)
 		</main>
+	}
+}
+
+templ appHeader(h HeaderData) {
+	<header class="border-b border-rule">
+		<div class="mx-auto flex max-w-6xl flex-wrap items-center gap-x-6 gap-y-3 px-4 py-4 sm:px-8">
+			<div class="mr-auto flex min-w-0 flex-wrap items-baseline gap-x-6 gap-y-1">
+				<span class="text-[1.0625rem] font-semibold tracking-[-0.01em]">YouTube Cleanup</span>
+				<nav class="flex gap-4 text-sm" aria-label="Sections">
+					@navLink("/", "Subscriptions", h.Active == "subscriptions")
+					@navLink("/playlists", "Playlists", h.Active == "playlists")
+				</nav>
+				<p class="w-full text-sm text-muted">
+					if h.SyncedAt.IsZero() {
+						Not synced yet
+					} else {
+						Synced { Ago(h.SyncedAt) }
+					}
+					if h.Connected {
+						· YouTube connected ·
+						<button hx-post="/auth/logout" hx-confirm="Disconnect YouTube? Your data and suggestions stay; you'll need to connect again to sync or make changes." class="underline underline-offset-2 hover:text-ink">Disconnect</button>
+					}
+				</p>
+			</div>
+			<div class="flex flex-wrap gap-2">
+				if !h.Connected {
+					<a href="/auth/login" class="btn btn-primary" aria-disabled?={ !h.OAuthReady }>Connect YouTube</a>
+				} else {
+					{ children... }
+				}
+			</div>
+		</div>
+		@JobBanner(h.Job)
+	</header>
+}
+
+templ navLink(href, label string, active bool) {
+	if active {
+		<a href={ templ.SafeURL(href) } aria-current="page" class="border-b-2 border-ink pb-0.5 font-medium text-ink">{ label }</a>
+	} else {
+		<a href={ templ.SafeURL(href) } class="border-b-2 border-transparent pb-0.5 text-muted hover:text-ink">{ label }</a>
+	}
+}
+
+templ pageNotices(oauthReady, aiConfigured bool, errMsg, warning, flash string) {
+	if !oauthReady {
+		@notice("YouTube isn't configured", "Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in .env, then restart. The README walks through creating the OAuth client.")
+	}
+	if !aiConfigured {
+		@notice("No AI model configured", "Set AI_MODEL, plus AI_BASE_URL and AI_API_KEY for your provider, in .env to get suggestions.")
+	}
+	if errMsg != "" {
+		<div class="mt-6 rounded-(--radius-control) border border-drop px-4 py-3 text-sm" role="alert">
+			<p class="font-medium text-drop">Last job failed</p>
+			<p class="mt-0.5 text-ink-2">{ errMsg }</p>
+		</div>
+	}
+	if flash != "" {
+		@notice("Done", flash)
+	}
+	if warning != "" {
+		@notice("Heads up", warning)
 	}
 }
 
@@ -201,8 +223,7 @@ templ Summary(s Stats, oob bool) {
 				{ fmt.Sprint(s.Total) } subscriptions, none reviewed yet.
 			} else {
 				{ fmt.Sprint(s.Total) } subscriptions.
-				<span class="text-drop">Unsubscribe from { fmt.Sprint(s.Unsubscribe) }</span>,
-				review { fmt.Sprint(s.Review) }, keep { fmt.Sprint(s.Keep) }.
+				@sentenceText(s.Sentence())
 			}
 		</p>
 		if s.Total > 0 {
@@ -242,6 +263,18 @@ templ Summary(s Stats, oob bool) {
 			}
 		}
 	</section>
+}
+
+// sentenceText renders " A, b, c." with accent clauses in the accent colour.
+templ sentenceText(parts []SentencePart) {
+	for i, part := range parts {
+		{ " " }
+		if part.Accent {
+			<span class="text-drop">{ part.Text }</span>{ punct(i, len(parts)) }
+		} else {
+			{ part.Text + punct(i, len(parts)) }
+		}
+	}
 }
 
 templ legend(mark, label string, n int) {
