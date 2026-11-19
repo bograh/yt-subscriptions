@@ -161,57 +161,11 @@ User's interests: %s
 Respond with ONLY a JSON object: {"results":[{"id":"...","category":"...","content_type":"...","verdict":"...","reason":"..."}]} with one entry per input channel.`,
 		quoteList(Categories), quoteList(ContentTypes), historyNote, time.Now().Format("2006-01-02"), interests)
 
-	reqBody := map[string]any{
-		"model":       c.Model,
-		"temperature": 0.2,
-		"messages": []map[string]string{
-			{"role": "system", "content": system},
-			{"role": "user", "content": string(payload)},
-		},
-	}
-	if c.JSONMode {
-		reqBody["response_format"] = map[string]string{"type": "json_object"}
-	}
-	body, err := json.Marshal(reqBody)
+	content, err := c.complete(ctx, system, string(payload))
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.BaseURL, "/")+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if c.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.APIKey)
-	}
-	hc := c.HTTP
-	if hc == nil {
-		hc = http.DefaultClient
-	}
-	resp, err := hc.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, &HTTPError{StatusCode: resp.StatusCode, Body: truncate(sanitize(string(raw)), maxErrorBodyRunes)}
-	}
-	if err != nil {
-		return nil, fmt.Errorf("ai: reading response: %w", err)
-	}
-	var cr struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(raw, &cr); err != nil || len(cr.Choices) == 0 {
-		return nil, fmt.Errorf("ai: unexpected response: %s", truncate(sanitize(string(raw)), maxErrorBodyRunes))
-	}
-
-	content := extractJSON(cr.Choices[0].Message.Content)
+	content = extractJSON(content)
 	var parsed struct {
 		Results []result `json:"results"`
 	}
@@ -241,6 +195,61 @@ Respond with ONLY a JSON object: {"results":[{"id":"...","category":"...","conte
 		return nil, fmt.Errorf("ai: model returned no usable results for %d channels", len(channels))
 	}
 	return out, nil
+}
+
+// complete sends one system + user chat completion request and returns the
+// first choice's message content. Non-2xx responses yield *HTTPError.
+func (c *Client) complete(ctx context.Context, system, user string) (string, error) {
+	reqBody := map[string]any{
+		"model":       c.Model,
+		"temperature": 0.2,
+		"messages": []map[string]string{
+			{"role": "system", "content": system},
+			{"role": "user", "content": user},
+		},
+	}
+	if c.JSONMode {
+		reqBody["response_format"] = map[string]string{"type": "json_object"}
+	}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.BaseURL, "/")+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
+	hc := c.HTTP
+	if hc == nil {
+		hc = http.DefaultClient
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", &HTTPError{StatusCode: resp.StatusCode, Body: truncate(sanitize(string(raw)), maxErrorBodyRunes)}
+	}
+	if err != nil {
+		return "", fmt.Errorf("ai: reading response: %w", err)
+	}
+	var cr struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(raw, &cr); err != nil || len(cr.Choices) == 0 {
+		return "", fmt.Errorf("ai: unexpected response: %s", truncate(sanitize(string(raw)), maxErrorBodyRunes))
+	}
+	return cr.Choices[0].Message.Content, nil
 }
 
 // extractJSON strips code fences / chatter around the JSON object some models add.
