@@ -51,5 +51,6 @@ If you used an earlier version that stored data in `state.json`/`token.json`, th
 
 - **API quota:** a sync uses roughly 1 unit per channel. Each unsubscribe costs 50 units. The default daily quota is 10,000.
 - **OAuth scope:** the app asks for the full `youtube` scope because unsubscribing requires it.
+- **Weekly re-login:** while your Google Cloud app is in *Testing* status, Google expires its login after 7 days. The dashboard notices this, forgets the token and shows **Connect YouTube** again. Publishing the app (it can stay unverified for personal use) removes the limit. **Disconnect** in the header revokes the token.
 - **Tailwind:** loaded with the Tailwind browser build to keep things simple. For anything beyond local use, switch to the Tailwind CLI.
 - **Templates:** after editing `.templ` files, re-run `go tool templ generate`, or run `go tool templ generate --watch --proxy=http://localhost:8080 --cmd="go run ."` for live reload.

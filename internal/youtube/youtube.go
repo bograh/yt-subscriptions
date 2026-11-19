@@ -26,10 +26,39 @@ type Client struct {
 	HTTP *http.Client // must be an OAuth2-authorized client
 }
 
-type apiError struct {
+// APIError is a non-2xx response from the YouTube Data API.
+type APIError struct {
+	Endpoint string
+	Status   int
+	Reason   string // e.g. "quotaExceeded", "subscriptionNotFound"
+	Message  string
+}
+
+func (e *APIError) Error() string {
+	msg := e.Message
+	if msg == "" {
+		msg = http.StatusText(e.Status)
+	}
+	return fmt.Sprintf("youtube %s: %d %s", e.Endpoint, e.Status, msg)
+}
+
+// Unauthorized reports whether the credentials were rejected (revoked or expired).
+func (e *APIError) Unauthorized() bool { return e.Status == http.StatusUnauthorized }
+
+// QuotaExceeded reports whether the project's daily API quota is used up.
+func (e *APIError) QuotaExceeded() bool {
+	return e.Reason == "quotaExceeded" || e.Reason == "dailyLimitExceeded" || e.Reason == "rateLimitExceeded"
+}
+
+func (e *APIError) NotFound() bool { return e.Status == http.StatusNotFound }
+
+type apiErrorBody struct {
 	Error struct {
 		Code    int    `json:"code"`
 		Message string `json:"message"`
+		Errors  []struct {
+			Reason string `json:"reason"`
+		} `json:"errors"`
 	} `json:"error"`
 }
 
@@ -45,11 +74,15 @@ func (c *Client) do(ctx context.Context, method, endpoint string, q url.Values, 
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
-		var e apiError
-		if json.Unmarshal(body, &e) == nil && e.Error.Message != "" {
-			return fmt.Errorf("youtube %s: %d %s", endpoint, resp.StatusCode, e.Error.Message)
+		apiErr := &APIError{Endpoint: endpoint, Status: resp.StatusCode}
+		var e apiErrorBody
+		if json.Unmarshal(body, &e) == nil {
+			apiErr.Message = e.Error.Message
+			if len(e.Error.Errors) > 0 {
+				apiErr.Reason = e.Error.Errors[0].Reason
+			}
 		}
-		return fmt.Errorf("youtube %s: %s", endpoint, resp.Status)
+		return apiErr
 	}
 	if out == nil {
 		return nil

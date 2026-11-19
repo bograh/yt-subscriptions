@@ -36,6 +36,10 @@ templ Dashboard(p Page) {
 						} else {
 							Synced { Ago(p.State.SyncedAt) }
 						}
+						if p.Connected {
+							· YouTube connected ·
+							<button hx-post="/auth/logout" hx-confirm="Disconnect YouTube? Your channels and suggestions stay; you'll need to connect again to sync or unsubscribe." class="underline underline-offset-2 hover:text-ink">Disconnect</button>
+						}
 					</p>
 				</div>
 				<div class="flex flex-wrap gap-2">

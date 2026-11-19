@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -8,6 +9,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -48,6 +51,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("POST /history", a.handleHistory)
 	mux.HandleFunc("GET /auth/login", a.handleLogin)
 	mux.HandleFunc("GET /auth/callback", a.handleCallback)
+	mux.HandleFunc("POST /auth/logout", a.handleLogout)
 	return mux
 }
 
@@ -154,7 +158,7 @@ func (a *App) handleSync(w http.ResponseWriter, r *http.Request) {
 	a.startJob(w, r, "Syncing subscriptions", func(ctx context.Context, progress func(int, int)) error {
 		fresh, err := yt.FetchSubscriptions(ctx, progress)
 		if err != nil {
-			return err
+			return a.checkAuth(err)
 		}
 		// Analyses and watch stats live in their own tables, so they carry over automatically.
 		return a.store.ReplaceChannels(ctx, fresh)
@@ -223,6 +227,11 @@ func (a *App) handleUnsubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := yt.Unsubscribe(r.Context(), subID); err != nil {
+		if err = a.checkAuth(err); errors.Is(err, ErrReconnect) {
+			w.Header().Set("HX-Refresh", "true") // re-render with the Connect button
+			fail(w, http.StatusUnauthorized, title, err)
+			return
+		}
 		fail(w, http.StatusBadGateway, title, err)
 		return
 	}
@@ -310,6 +319,28 @@ func (a *App) handleCallback(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
+// handleLogout revokes the token at Google (best effort) and forgets it locally.
+func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if tok := a.store.Token(); tok != nil {
+		t := cmp.Or(tok.RefreshToken, tok.AccessToken)
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://oauth2.googleapis.com/revoke",
+			strings.NewReader(url.Values{"token": {t}}.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		if resp, err := http.DefaultClient.Do(req); err != nil {
+			log.Printf("revoke token: %v", err)
+		} else {
+			resp.Body.Close()
+		}
+	}
+	if err := a.store.DeleteToken(); err != nil {
+		fail(w, http.StatusInternalServerError, "Couldn't disconnect", err)
+		return
+	}
+	w.Header().Set("HX-Redirect", "/")
+}
+
 // youtube returns an API client whose refreshed tokens are persisted.
 func (a *App) youtube() (*youtube.Client, error) {
 	tok := a.store.Token()
@@ -331,9 +362,20 @@ type savingTokenSource struct {
 	last  string
 }
 
+// ErrReconnect means Google no longer accepts our stored credentials. Apps in
+// Google's "Testing" publishing status get refresh tokens that expire after 7 days.
+var ErrReconnect = errors.New("your Google sign-in has expired or was revoked; connect YouTube again")
+
 func (s *savingTokenSource) Token() (*oauth2.Token, error) {
 	t, err := s.src.Token()
 	if err != nil {
+		var re *oauth2.RetrieveError
+		if errors.As(err, &re) && re.ErrorCode == "invalid_grant" {
+			if derr := s.store.DeleteToken(); derr != nil {
+				log.Printf("delete token: %v", derr)
+			}
+			return nil, ErrReconnect
+		}
 		return nil, err
 	}
 	s.mu.Lock()
@@ -345,6 +387,22 @@ func (s *savingTokenSource) Token() (*oauth2.Token, error) {
 		}
 	}
 	return t, nil
+}
+
+// checkAuth forgets the stored token when YouTube rejects it, and returns the
+// error to report (ErrReconnect in that case).
+func (a *App) checkAuth(err error) error {
+	if errors.Is(err, ErrReconnect) {
+		return ErrReconnect
+	}
+	var apiErr *youtube.APIError
+	if errors.As(err, &apiErr) && apiErr.Unauthorized() {
+		if derr := a.store.DeleteToken(); derr != nil {
+			log.Printf("delete token: %v", derr)
+		}
+		return ErrReconnect
+	}
+	return err
 }
 
 // fail writes a plain-text error; static/app.js shows it as a toast with the given title.

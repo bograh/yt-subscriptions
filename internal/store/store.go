@@ -289,6 +289,12 @@ func (s *Store) SaveToken(t *oauth2.Token) error {
 	return s.tx(context.Background(), func(tx *sql.Tx) error { return setSetting(tx, keyOAuthToken, string(b)) })
 }
 
+// DeleteToken forgets the OAuth token (disconnect, or Google revoked it).
+func (s *Store) DeleteToken() error {
+	_, err := s.db.Exec(`DELETE FROM settings WHERE key = ?`, keyOAuthToken)
+	return err
+}
+
 // ---- helpers ----
 
 func (s *Store) tx(ctx context.Context, fn func(*sql.Tx) error) error {
