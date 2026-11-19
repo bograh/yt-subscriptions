@@ -139,3 +139,15 @@ templ groupOption(value, label, current string) {
 templ verdictOption(value, label, current string) {
 	<option value={ value } selected?={ value == current }>{ label }</option>
 }
+
+// bulkBar is the action bar for the rows ticked in a list. It starts hidden;
+// static/app.js shows it, keeps the count and fills in the confirmations.
+templ bulkBar(one, many string) {
+	<div id="bulk" hidden role="region" aria-label="Bulk actions" data-one={ one } data-many={ many } class="bulk-bar fixed inset-x-4 bottom-4 z-40 mx-auto flex max-w-3xl flex-wrap items-center gap-x-4 gap-y-2 rounded-[6px] border border-rule-strong bg-paper px-4 py-3">
+		<p class="text-sm font-medium" aria-live="polite"><span data-bulk-count class="font-mono tabular-nums">0 { many }</span> selected</p>
+		<div class="flex flex-wrap gap-2">
+			{ children... }
+		</div>
+		<button type="button" data-bulk-clear class="btn btn-sm ml-auto">Clear</button>
+	</div>
+}

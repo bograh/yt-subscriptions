@@ -57,12 +57,13 @@ templ PlaylistsPage(p PlaylistPage) {
 				</div>
 			</form>
 			@PlaylistRows(p.List)
+			@playlistBulkBar()
 		</main>
 	}
 }
 
 templ PlaylistSummary(s PlaylistStats, oob bool) {
-	<section id="summary" hx-swap-oob?={ oob } class="pt-10">
+	<section id="summary" hx-swap-oob?={ oob } data-quota-left={ fmt.Sprint(s.QuotaRemaining()) } class="pt-10">
 		<p class="max-w-3xl text-2xl leading-snug font-medium tracking-[-0.02em] sm:text-[1.875rem]">
 			if s.Total == 0 {
 				No playlists yet. Connect YouTube and sync to start.
@@ -113,14 +114,23 @@ templ PlaylistSummary(s PlaylistStats, oob bool) {
 }
 
 templ PlaylistRows(l PlaylistList) {
-	<div id="playlist-list">
+	<div id="playlist-list" data-select-scope>
 		if l.Shown == 0 {
 			<p class="py-20 text-center text-sm text-muted">Nothing matches. Clear the search or pick another filter.</p>
+		}
+		if l.Shown > 0 {
+			<label class="mt-8 flex w-fit items-center gap-3 text-sm text-muted">
+				<input type="checkbox" data-select="all" class="check"/>
+				Select all { fmt.Sprint(l.Shown) } shown
+			</label>
 		}
 		for _, g := range l.Groups {
 			<section class="mt-10">
 				<h2 class="flex items-baseline justify-between border-b border-ink pb-2">
-					<span class="font-semibold tracking-[-0.01em]">{ g.Name }</span>
+					<label class="flex items-center gap-3">
+						<input type="checkbox" data-select="group" class="check" aria-label={ "Select all in " + g.Name }/>
+						<span class="font-semibold tracking-[-0.01em]">{ g.Name }</span>
+					</label>
 					<span class="font-mono text-xs text-muted tabular-nums">{ fmt.Sprint(len(g.Playlists)) }</span>
 				</h2>
 				<ul class="divide-y divide-rule">
@@ -134,16 +144,19 @@ templ PlaylistRows(l PlaylistList) {
 }
 
 templ PlaylistRow(p store.Playlist, l PlaylistList) {
-	<li id={ "pl-" + p.ID } class="grid grid-cols-[4.5rem_minmax(0,1fr)] gap-x-4 gap-y-2 py-4 md:grid-cols-[4.5rem_minmax(0,15rem)_minmax(0,1fr)_auto] md:items-start">
-		if p.Thumbnail != "" {
-			<img src={ p.Thumbnail } alt="" loading="lazy" class="aspect-video w-[4.5rem] rounded-[4px] bg-paper-2 object-cover"/>
-		} else {
-			<div class="aspect-video w-[4.5rem] rounded-[4px] bg-paper-2" aria-hidden="true"></div>
-		}
+	<li id={ "pl-" + p.ID } class="grid grid-cols-[6.25rem_minmax(0,1fr)] gap-x-4 gap-y-2 py-4 md:grid-cols-[6.25rem_minmax(0,15rem)_minmax(0,1fr)_auto] md:items-start">
+		<div class="flex items-center gap-3">
+			<input type="checkbox" name="ids" value={ p.ID } data-select="row" data-clean={ fmt.Sprint(p.Unavailable + len(p.Duplicates)) } class="check" aria-label={ "Select " + p.Title }/>
+			if p.Thumbnail != "" {
+				<img src={ p.Thumbnail } alt="" loading="lazy" class="aspect-video w-[4.5rem] rounded-[4px] bg-paper-2 object-cover"/>
+			} else {
+				<div class="aspect-video w-[4.5rem] rounded-[4px] bg-paper-2" aria-hidden="true"></div>
+			}
+		</div>
 		<div class="min-w-0">
 			<a href={ templ.SafeURL(p.URL()) } target="_blank" rel="noreferrer" class="block truncate font-medium hover:underline hover:underline-offset-2">{ p.Title }</a>
 			<p class="mt-0.5 font-mono text-xs text-muted tabular-nums">
-				{ plural(len(p.Items), "video", "videos") }
+				{ Plural(len(p.Items), "video", "videos") }
 				if Privacy(p) != "" {
 					· { Privacy(p) }
 				}
@@ -222,4 +235,37 @@ templ PlaylistRow(p store.Playlist, l PlaylistList) {
 			</button>
 		</div>
 	</li>
+}
+
+// playlistBulkBar holds the actions for the playlists ticked in the list.
+templ playlistBulkBar() {
+	@bulkBar("playlist", "playlists") {
+		<button type="button" hx-post="/playlists/bulk" hx-vals='{"action":"keep"}' hx-include="#playlist-list [data-select=row]:checked" hx-swap="none" class="btn btn-sm" title="Keep these playlists as they are. Re-analysis won't change them.">Keep</button>
+		<button type="button" hx-post="/playlists/bulk" hx-vals='{"action":"undo"}' hx-include="#playlist-list [data-select=row]:checked" hx-swap="none" class="btn btn-sm" title="Clear your Keep decision, so the AI's suggestion applies again.">Undo keep</button>
+		<button
+			type="button"
+			hx-post="/playlists/bulk"
+			hx-vals='{"action":"clean"}'
+			hx-include="#playlist-list [data-select=row]:checked"
+			hx-target="#job"
+			hx-swap="outerHTML"
+			hx-confirm="Remove unavailable and duplicate videos from the selected playlists?"
+			data-confirm="Remove the unavailable and duplicate videos from {count} ({units} in all)? This uses about {cost} of your {left} remaining quota units."
+			data-units="clean"
+			data-cost={ fmt.Sprint(youtube.CostWrite) }
+			class="btn btn-sm"
+		>Clean up</button>
+		<button
+			type="button"
+			hx-post="/playlists/bulk"
+			hx-vals='{"action":"delete"}'
+			hx-include="#playlist-list [data-select=row]:checked"
+			hx-target="#job"
+			hx-swap="outerHTML"
+			hx-confirm="Delete the selected playlists from YouTube? This can't be undone."
+			data-confirm="Delete {count} from YouTube? The videos themselves aren't affected. This uses about {cost} of your {left} remaining quota units and can't be undone."
+			data-cost={ fmt.Sprint(youtube.CostWrite) }
+			class="btn btn-sm btn-drop"
+		>Delete</button>
+	}
 }

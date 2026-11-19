@@ -94,6 +94,12 @@ func (s *Server) handlePlaylistAnalyze(w http.ResponseWriter, r *http.Request) {
 // playlist ({id}) or from all of them (no {id}), within today's quota.
 func (s *Server) handlePlaylistClean(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	s.startCleanJob(w, r, func(p store.Playlist) bool { return id == "" || p.ID == id })
+}
+
+// startCleanJob removes, in the background, the unavailable and duplicate
+// videos of every playlist that match accepts, within today's quota.
+func (s *Server) startCleanJob(w http.ResponseWriter, r *http.Request, match func(store.Playlist) bool) {
 	yt, err := s.youtube()
 	if err != nil {
 		fail(w, http.StatusUnauthorized, "Can't clean up", err)
@@ -106,7 +112,7 @@ func (s *Server) handlePlaylistClean(w http.ResponseWriter, r *http.Request) {
 		}
 		var items []string
 		for _, p := range ps.Playlists {
-			if id != "" && p.ID != id {
+			if !match(p) {
 				continue
 			}
 			for _, it := range p.Items {
@@ -250,6 +256,86 @@ func (s *Server) handlePlaylistDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	// Empty body removes the row; the summary updates out of band.
 	render(w, r, views.PlaylistSummary(views.ComputePlaylistStats(ps, s.quotaLimit), true))
+}
+
+// handlePlaylistBulk applies one action to the playlists selected on the page
+// (form values: action, ids).
+func (s *Server) handlePlaylistBulk(w http.ResponseWriter, r *http.Request) {
+	ids, ok := selectedIDs(w, r, "playlists")
+	if !ok {
+		return
+	}
+	selected := set(ids)
+	switch action := r.FormValue("action"); action {
+	case "keep", "undo":
+		verdict, done := store.PlaylistKeep, "Kept"
+		if action == "undo" {
+			verdict, done = "", "Cleared your decision for"
+		}
+		if err := s.store.SetPlaylistDecisions(r.Context(), ids, verdict); err != nil {
+			fail(w, http.StatusInternalServerError, "Couldn't save your decisions", err)
+			return
+		}
+		s.setFlash(fmt.Sprintf("%s %s.", done, views.Plural(len(ids), "playlist", "playlists")))
+		w.Header().Set("HX-Refresh", "true")
+	case "clean":
+		s.startCleanJob(w, r, func(p store.Playlist) bool { return selected[p.ID] })
+	case "delete":
+		s.startDeleteJob(w, r, selected)
+	default:
+		fail(w, http.StatusBadRequest, "Unknown action", fmt.Errorf("%q isn't a bulk action for playlists", action))
+	}
+}
+
+// startDeleteJob deletes the given playlists from YouTube in the background,
+// stopping before the daily quota runs out.
+func (s *Server) startDeleteJob(w http.ResponseWriter, r *http.Request, ids map[string]bool) {
+	yt, err := s.youtube()
+	if err != nil {
+		fail(w, http.StatusUnauthorized, "Can't delete playlists", err)
+		return
+	}
+	s.startJob(w, r, "Deleting selected playlists", func(ctx context.Context, progress func(int, int)) error {
+		ps, err := s.store.Playlists(ctx)
+		if err != nil {
+			return err
+		}
+		var todo []store.Playlist
+		for _, p := range ps.Playlists {
+			if ids[p.ID] {
+				todo = append(todo, p)
+			}
+		}
+		affordable := max(0, s.quotaLimit-ps.QuotaUsed) / youtube.CostWrite
+		skipped := 0
+		if len(todo) > affordable {
+			skipped = len(todo) - affordable
+			todo = todo[:affordable]
+		}
+		progress(0, len(todo))
+		deleted := 0
+		for i, p := range todo {
+			if err := yt.DeletePlaylist(ctx, p.ID); err != nil {
+				var apiErr *youtube.APIError
+				if errors.As(err, &apiErr) && apiErr.QuotaExceeded() {
+					skipped += len(todo) - i
+					break
+				}
+				return fmt.Errorf("deleted %d of %d playlists, then couldn't delete %s: %w", deleted, len(todo), p.Title, s.checkAuth(err))
+			}
+			if err := s.store.DeletePlaylist(ctx, p.ID); err != nil {
+				return err
+			}
+			deleted++
+			progress(i+1, len(todo))
+		}
+		if skipped > 0 {
+			s.warn(fmt.Sprintf("Deleted %d playlists, then stopped before YouTube's daily quota ran out; %d are left. Run it again after midnight Pacific time.", deleted, skipped))
+		} else {
+			s.setFlash(fmt.Sprintf("Deleted %s.", views.Plural(deleted, "playlist", "playlists")))
+		}
+		return nil
+	})
 }
 
 func (s *Server) handlePlaylistDecision(verdict string) http.HandlerFunc {

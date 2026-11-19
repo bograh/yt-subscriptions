@@ -195,19 +195,56 @@ func (s *Server) handleDecision(verdict string) http.HandlerFunc {
 // handleBulkUnsubscribe unsubscribes from every channel whose effective verdict is
 // "unsubscribe", as a background job, stopping before the daily quota runs out.
 func (s *Server) handleBulkUnsubscribe(w http.ResponseWriter, r *http.Request) {
+	s.startUnsubscribeJob(w, r, "Unsubscribing from suggested channels", func(c store.Channel) bool {
+		return c.Verdict() == store.VerdictUnsubscribe
+	})
+}
+
+// handleChannelBulk applies one action to the channels selected on the page
+// (form values: action, ids).
+func (s *Server) handleChannelBulk(w http.ResponseWriter, r *http.Request) {
+	ids, ok := selectedIDs(w, r, "channels")
+	if !ok {
+		return
+	}
+	switch action := r.FormValue("action"); action {
+	case "keep", "undo":
+		verdict, done := store.VerdictKeep, "Kept"
+		if action == "undo" {
+			verdict, done = "", "Cleared your decision for"
+		}
+		if err := s.store.SetDecisions(r.Context(), ids, verdict); err != nil {
+			fail(w, http.StatusInternalServerError, "Couldn't save your decisions", err)
+			return
+		}
+		s.setFlash(fmt.Sprintf("%s %s.", done, views.Plural(len(ids), "channel", "channels")))
+		w.Header().Set("HX-Refresh", "true")
+	case "unsubscribe":
+		selected := set(ids)
+		s.startUnsubscribeJob(w, r, "Unsubscribing from selected channels", func(c store.Channel) bool {
+			return selected[c.ID]
+		})
+	default:
+		fail(w, http.StatusBadRequest, "Unknown action", fmt.Errorf("%q isn't a bulk action for channels", action))
+	}
+}
+
+// startUnsubscribeJob unsubscribes, in the background, from every synced
+// channel that match accepts, stopping before the daily quota runs out.
+func (s *Server) startUnsubscribeJob(w http.ResponseWriter, r *http.Request, label string, match func(store.Channel) bool) {
 	yt, err := s.youtube()
 	if err != nil {
 		fail(w, http.StatusUnauthorized, "Can't unsubscribe", err)
 		return
 	}
-	s.startJob(w, r, "Unsubscribing from suggested channels", func(ctx context.Context, progress func(int, int)) error {
+	s.startJob(w, r, label, func(ctx context.Context, progress func(int, int)) error {
 		st, err := s.store.Snapshot(ctx)
 		if err != nil {
 			return err
 		}
 		var todo []store.Channel
 		for _, c := range st.Channels {
-			if c.Verdict() == store.VerdictUnsubscribe {
+			if match(c) {
 				todo = append(todo, c)
 			}
 		}
@@ -242,7 +279,7 @@ func (s *Server) handleBulkUnsubscribe(w http.ResponseWriter, r *http.Request) {
 		case len(failed) > 0:
 			return fmt.Errorf("couldn't unsubscribe from %d channel(s): %s", len(failed), strings.Join(failed, ", "))
 		case skipped > 0:
-			s.warn(fmt.Sprintf("Stopped before YouTube's daily quota ran out; %d channel(s) are still marked Unsubscribe. Run it again after midnight Pacific time.", skipped))
+			s.warn(fmt.Sprintf("Stopped before YouTube's daily quota ran out; %d channel(s) are still subscribed. Run it again after midnight Pacific time.", skipped))
 		}
 		return nil
 	})

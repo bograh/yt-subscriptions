@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -152,5 +153,49 @@ func TestPlaylistSyncCleanMergeDelete(t *testing.T) {
 	ps, _ = st.Playlists(ctx)
 	if len(ps.Playlists) != 1 || len(yt.playlists) != 1 {
 		t.Fatalf("after delete: local %d, youtube %d", len(ps.Playlists), len(yt.playlists))
+	}
+}
+
+func TestPlaylistBulkActions(t *testing.T) {
+	yt := &fakeYouTube{
+		playlists: []string{"PLa", "PLb", "PLc"},
+		titles:    map[string]string{"PLa": "A", "PLb": "B", "PLc": "C"},
+		items: map[string][]fakeIt{
+			"PLa": {{"a1", "v1"}, {"a2", "v1"}},
+			"PLb": {{"b1", "gone1"}, {"b2", "v2"}},
+			"PLc": {{"c1", "v3"}},
+		},
+	}
+	srv := httptest.NewServer(yt)
+	defer srv.Close()
+
+	ctx := context.Background()
+	s := newTestServer(t, nil)
+	s.ytBase = srv.URL + "/"
+	connect(t, s)
+	runJob(t, s, s.handlePlaylistSync, "/playlists/sync", "")
+
+	postForm(t, s, s.handlePlaylistBulk, url.Values{"action": {"keep"}, "ids": {"PLc"}})
+	ps, _ := s.store.Playlists(ctx)
+	if ps.Playlists[2].Decision != store.PlaylistKeep {
+		t.Fatalf("PLc not kept: %+v", ps.Playlists[2])
+	}
+
+	// Clean only the selected playlists: PLa's duplicate goes, PLb's unavailable video stays.
+	postForm(t, s, s.handlePlaylistBulk, url.Values{"action": {"clean"}, "ids": {"PLa"}})
+	if len(yt.items["PLa"]) != 1 || len(yt.items["PLb"]) != 2 {
+		t.Fatalf("after clean: PLa %v, PLb %v", yt.items["PLa"], yt.items["PLb"])
+	}
+
+	// Delete two, with quota for only one: the second is left and a warning explains why.
+	ps, _ = s.store.Playlists(ctx)
+	s.quotaLimit = ps.QuotaUsed + 50
+	postForm(t, s, s.handlePlaylistBulk, url.Values{"action": {"delete"}, "ids": {"PLa", "PLb"}})
+	if len(yt.playlists) != 2 || !strings.Contains(s.lastWarn, "1 are left") {
+		t.Fatalf("youtube has %v, warning %q", yt.playlists, s.lastWarn)
+	}
+	ps, _ = s.store.Playlists(ctx)
+	if len(ps.Playlists) != 2 {
+		t.Fatalf("local playlists: %d, want 2", len(ps.Playlists))
 	}
 }

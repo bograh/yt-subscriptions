@@ -127,6 +127,18 @@
     border-color: var(--color-drop);
     color: var(--color-drop-ink);
   }
+  /* Row selection checkboxes and the bulk action bar (static/app.js). */
+  .check {
+    width: 1rem;
+    height: 1rem;
+    flex-shrink: 0;
+    accent-color: var(--color-ink);
+    cursor: pointer;
+  }
+  .bulk-bar {
+    box-shadow: 0 6px 24px -12px oklch(19% 0.012 60 / 0.35);
+  }
+
   .field {
     height: 2.25rem;
     border-radius: var(--radius-control);
@@ -181,6 +193,12 @@
   .htmx-request .htmx-hide-on-request {
     display: none;
   }
+}
+
+/* Keep toasts above the bulk action bar while it's showing. Unlayered, so it
+   beats the bottom-4 utility on #toasts. */
+body.selecting #toasts {
+  bottom: 7rem;
 }
 
 @media (prefers-reduced-motion: reduce) {

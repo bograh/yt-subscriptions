@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -74,6 +76,21 @@ func runJob(t *testing.T, s *Server, h http.HandlerFunc, path, id string) *httpt
 	s.jobs.Wait()
 	if s.lastErr != "" {
 		t.Fatalf("%s: job failed: %s", path, s.lastErr)
+	}
+	return rec
+}
+
+// postForm sends a form POST to h, waits for any job it started and fails
+// the test if that job reported an error.
+func postForm(t *testing.T, s *Server, h http.HandlerFunc, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	s.jobs.Wait()
+	if s.lastErr != "" {
+		t.Fatalf("job failed: %s", s.lastErr)
 	}
 	return rec
 }
