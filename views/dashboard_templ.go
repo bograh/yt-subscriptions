@@ -32,7 +32,7 @@ func layout() templ.Component {
 		ctx = templ.InitializeContext(ctx)
 		templ_7745c5c3_Var1 := templ.GetChildren(ctx)
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<!doctype html><html lang=\"en\" class=\"dark\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Subscription Cleanup</title><script src=\"https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.1.11\"></script><script src=\"https://unpkg.com/htmx.org@2.0.4\"></script><style>\n\t\t\t\t.htmx-request .htmx-indicator { display: inline-block; }\n\t\t\t\t.htmx-indicator { display: none; }\n\t\t\t</style></head><body class=\"min-h-screen bg-zinc-950 text-zinc-200 antialiased\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<!doctype html><html lang=\"en\" class=\"dark\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Subscription Cleanup</title><link rel=\"stylesheet\" href=\"/static/app.css\"><script src=\"/static/htmx.min.js\" defer></script><style>\n\t\t\t\t.htmx-request .htmx-indicator { display: inline-block; }\n\t\t\t\t.htmx-indicator { display: none; }\n\t\t\t</style></head><body class=\"min-h-screen bg-zinc-950 text-zinc-200 antialiased\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

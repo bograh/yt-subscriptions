@@ -37,6 +37,7 @@ type App struct {
 
 func (a *App) routes() http.Handler {
 	mux := http.NewServeMux()
+	mux.Handle("GET /static/", staticHandler())
 	mux.HandleFunc("GET /{$}", a.handleIndex)
 	mux.HandleFunc("GET /channels", a.handleChannels)
 	mux.HandleFunc("DELETE /channels/{id}", a.handleUnsubscribe)

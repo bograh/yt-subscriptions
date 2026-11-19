@@ -1,26 +1,43 @@
-APP      := yt-subscriptions
-BIN      := bin/$(APP)
-IMAGE    ?= $(APP):latest
-PORT     ?= 8080
-TEMPL    := go tool templ
+APP              := yt-subscriptions
+BIN              := bin/$(APP)
+IMAGE            ?= $(APP):latest
+PORT             ?= 8080
+TEMPL            := go tool templ
+TAILWIND_VERSION := v4.1.11
+TAILWIND         := bin/tailwindcss
+
+UNAME_S := $(shell uname -s | tr A-Z a-z)
+UNAME_M := $(shell uname -m)
+TW_OS   := $(if $(filter darwin,$(UNAME_S)),macos,linux)
+TW_ARCH := $(if $(filter x86_64 amd64,$(UNAME_M)),x64,arm64)
 
 .DEFAULT_GOAL := help
-.PHONY: help generate build run dev fmt vet tidy check clean docker-build docker-run
+.PHONY: help generate css build run dev fmt vet test tidy check clean docker-build docker-run
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
+$(TAILWIND):
+	@mkdir -p bin
+	curl -sSfL -o $@ https://github.com/tailwindlabs/tailwindcss/releases/download/$(TAILWIND_VERSION)/tailwindcss-$(TW_OS)-$(TW_ARCH)
+	chmod +x $@
+
 generate: ## Generate Go code from .templ files
 	$(TEMPL) generate
 
-build: generate ## Build the binary into bin/
+css: $(TAILWIND) ## Build static/app.css with the Tailwind CLI
+	$(TAILWIND) -i styles/input.css -o static/app.css --minify
+
+build: generate css ## Build the binary into bin/
 	go build -o $(BIN) .
 
 run: build ## Build and run the dashboard
 	PORT=$(PORT) ./$(BIN)
 
-dev: ## Run with live reload (templ watch + browser proxy on :7331)
-	$(TEMPL) generate --watch --proxy=http://localhost:$(PORT) --cmd="go run ."
+dev: $(TAILWIND) ## Live reload: rebuilds CSS and templates (open the proxy on :7331)
+	$(TAILWIND) -i styles/input.css -o static/app.css --watch=always & \
+	$(TEMPL) generate --watch --proxy=http://localhost:$(PORT) --cmd="go run ."; \
+	kill %1
 
 fmt: ## Format Go and templ files
 	go fmt ./...
@@ -29,19 +46,21 @@ fmt: ## Format Go and templ files
 vet: generate ## Run go vet
 	go vet ./...
 
+test: generate ## Run tests
+	go test ./...
+
 tidy: ## Tidy go.mod
 	go mod tidy
 
-check: fmt vet build ## Format, vet and build
+check: fmt vet test build ## Format, vet, test and build
 
-clean: ## Remove build output and generated templ code
+clean: ## Remove build output
 	rm -rf bin
-	find . -name '*_templ.go' -delete
 
 docker-build: ## Build the Docker image
 	docker build -t $(IMAGE) .
 
-docker-run: ## Run the image with .env and a persistent data volume
+docker-run: ## Run the image with .env and a persistent data volume (localhost only)
 	docker run --rm -it -p 127.0.0.1:$(PORT):8080 --env-file .env \
 		-e OAUTH_REDIRECT_URL=http://localhost:$(PORT)/auth/callback \
 		-v $(APP)-data:/data $(IMAGE)
