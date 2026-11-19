@@ -2,8 +2,11 @@
  * theme: custom warm-paper · anchor hue: 80 · accent: signal red-orange (drop) · nav: edge-aligned minimal · footer: none (app)
  * fonts: Geist (UI) + Geist Mono (figures, meta)
  */
-@import "tailwindcss";
+/* Only scan the templates and view helpers (which return class names like
+   bg-drop), not the whole repo, so the output only changes when they do. */
+@import "tailwindcss" source(none);
 @source "../views";
+@source not "../views/*_test.go";
 
 @font-face {
   font-family: "Geist";
