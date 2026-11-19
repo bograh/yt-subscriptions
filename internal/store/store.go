@@ -41,11 +41,13 @@ type Channel struct {
 	Thumbnail       string    `json:"thumbnail"`
 	SubscribedAt    time.Time `json:"subscribed_at"`
 	SubscriberCount int64     `json:"subscriber_count"`
-	VideoCount      int64     `json:"video_count"`
-	Topics          []string  `json:"topics,omitempty"`
-	UploadsPlaylist string    `json:"uploads_playlist"`
-	LastUpload      time.Time `json:"last_upload"`
-	RecentTitles    []string  `json:"recent_titles,omitempty"`
+	// SubscribersHidden is set when the channel hides its count (SubscriberCount is then 0).
+	SubscribersHidden bool      `json:"subscribers_hidden"`
+	VideoCount        int64     `json:"video_count"`
+	Topics            []string  `json:"topics,omitempty"`
+	UploadsPlaylist   string    `json:"uploads_playlist"`
+	LastUpload        time.Time `json:"last_upload"`
+	RecentTitles      []string  `json:"recent_titles,omitempty"`
 
 	// From an optional Google Takeout watch-history import.
 	WatchCount  int       `json:"watch_count"`
@@ -130,7 +132,7 @@ func (s *Store) Snapshot(ctx context.Context) (State, error) {
 	var st State
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT c.id, c.subscription_id, c.title, c.description, c.thumbnail, c.subscribed_at,
-		       c.subscriber_count, c.video_count, c.topics, c.uploads_playlist, c.last_upload, c.recent_titles,
+		       c.subscriber_count, c.subscribers_hidden, c.video_count, c.topics, c.uploads_playlist, c.last_upload, c.recent_titles,
 		       COALESCE(w.count, 0), w.last_watched,
 		       a.category, a.content_type, a.verdict, a.reason, a.analyzed_at
 		FROM channels c
@@ -150,7 +152,7 @@ func (s *Store) Snapshot(ctx context.Context) (State, error) {
 			analyzedAt                        sql.NullInt64
 		)
 		if err := rows.Scan(&c.ID, &c.SubscriptionID, &c.Title, &c.Description, &c.Thumbnail, &subscribedAt,
-			&c.SubscriberCount, &c.VideoCount, &topics, &c.UploadsPlaylist, &lastUpload, &titles,
+			&c.SubscriberCount, &c.SubscribersHidden, &c.VideoCount, &topics, &c.UploadsPlaylist, &lastUpload, &titles,
 			&c.WatchCount, &watched,
 			&category, &ctype, &verdict, &reason, &analyzedAt); err != nil {
 			return st, err
@@ -200,15 +202,15 @@ func (s *Store) ReplaceChannels(ctx context.Context, channels []Channel) error {
 		}
 		stmt, err := tx.Prepare(`INSERT OR REPLACE INTO channels
 			(id, subscription_id, title, description, thumbnail, subscribed_at, subscriber_count,
-			 video_count, topics, uploads_playlist, last_upload, recent_titles)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			 subscribers_hidden, video_count, topics, uploads_playlist, last_upload, recent_titles)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 		if err != nil {
 			return err
 		}
 		defer stmt.Close()
 		for _, c := range channels {
 			if _, err := stmt.Exec(c.ID, c.SubscriptionID, c.Title, c.Description, c.Thumbnail, toUnix(c.SubscribedAt),
-				c.SubscriberCount, c.VideoCount, jsonList(c.Topics), c.UploadsPlaylist, toUnix(c.LastUpload),
+				c.SubscriberCount, c.SubscribersHidden, c.VideoCount, jsonList(c.Topics), c.UploadsPlaylist, toUnix(c.LastUpload),
 				jsonList(c.RecentTitles)); err != nil {
 				return err
 			}

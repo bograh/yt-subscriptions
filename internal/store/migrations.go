@@ -41,6 +41,9 @@ var migrations = []string{
 		key   TEXT PRIMARY KEY,
 		value TEXT NOT NULL
 	);`,
+
+	// 2: channels that hide their subscriber count.
+	`ALTER TABLE channels ADD COLUMN subscribers_hidden INTEGER NOT NULL DEFAULT 0;`,
 }
 
 func migrate(db *sql.DB) error {

@@ -4,6 +4,7 @@ package youtube
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,6 +25,7 @@ const Scope = "https://www.googleapis.com/auth/youtube"
 
 type Client struct {
 	HTTP *http.Client // must be an OAuth2-authorized client
+	Base string       // API base URL; defaults to the real API (tests override it)
 }
 
 // APIError is a non-2xx response from the YouTube Data API.
@@ -63,7 +65,11 @@ type apiErrorBody struct {
 }
 
 func (c *Client) do(ctx context.Context, method, endpoint string, q url.Values, out any) error {
-	req, err := http.NewRequestWithContext(ctx, method, apiBase+endpoint+"?"+q.Encode(), nil)
+	base := c.Base
+	if base == "" {
+		base = apiBase
+	}
+	req, err := http.NewRequestWithContext(ctx, method, base+endpoint+"?"+q.Encode(), nil)
 	if err != nil {
 		return err
 	}
@@ -97,8 +103,11 @@ type thumbnails struct {
 
 // FetchSubscriptions lists every channel the user is subscribed to, enriched with
 // channel stats and recent upload titles. progress is called as work completes.
-func (c *Client) FetchSubscriptions(ctx context.Context, progress func(done, total int)) ([]store.Channel, error) {
-	var channels []store.Channel
+//
+// uploadFailures lists channel IDs whose recent uploads couldn't be fetched; their
+// LastUpload/RecentTitles are empty and the caller should keep the previous values.
+// Quota and credential errors abort the whole sync with an error.
+func (c *Client) FetchSubscriptions(ctx context.Context, progress func(done, total int)) (channels []store.Channel, uploadFailures []string, err error) {
 	pageToken := ""
 	for {
 		q := url.Values{"part": {"snippet"}, "mine": {"true"}, "maxResults": {"50"}, "order": {"alphabetical"}}
@@ -121,7 +130,7 @@ func (c *Client) FetchSubscriptions(ctx context.Context, progress func(done, tot
 			} `json:"items"`
 		}
 		if err := c.do(ctx, http.MethodGet, "subscriptions", q, &res); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		for _, it := range res.Items {
 			thumb := it.Snippet.Thumbnails.Medium.URL
@@ -145,11 +154,14 @@ func (c *Client) FetchSubscriptions(ctx context.Context, progress func(done, tot
 
 	total := len(channels)
 	if err := c.enrichChannels(ctx, channels); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	progress(0, total)
-	c.fetchRecentUploads(ctx, channels, func(done int) { progress(done, total) })
-	return channels, ctx.Err()
+	uploadFailures, err = c.fetchRecentUploads(ctx, channels, func(done int) { progress(done, total) })
+	if err != nil {
+		return nil, nil, err
+	}
+	return channels, uploadFailures, ctx.Err()
 }
 
 // enrichChannels adds stats, topics, and uploads playlist IDs (50 channels per call).
@@ -169,8 +181,9 @@ func (c *Client) enrichChannels(ctx context.Context, channels []store.Channel) e
 			Items []struct {
 				ID         string `json:"id"`
 				Statistics struct {
-					SubscriberCount string `json:"subscriberCount"`
-					VideoCount      string `json:"videoCount"`
+					SubscriberCount       string `json:"subscriberCount"`
+					HiddenSubscriberCount bool   `json:"hiddenSubscriberCount"`
+					VideoCount            string `json:"videoCount"`
 				} `json:"statistics"`
 				ContentDetails struct {
 					RelatedPlaylists struct {
@@ -192,6 +205,7 @@ func (c *Client) enrichChannels(ctx context.Context, channels []store.Channel) e
 			}
 			ch := &channels[i]
 			ch.SubscriberCount, _ = strconv.ParseInt(it.Statistics.SubscriberCount, 10, 64)
+			ch.SubscribersHidden = it.Statistics.HiddenSubscriberCount
 			ch.VideoCount, _ = strconv.ParseInt(it.Statistics.VideoCount, 10, 64)
 			ch.UploadsPlaylist = it.ContentDetails.RelatedPlaylists.Uploads
 			ch.Topics = nil
@@ -205,26 +219,51 @@ func (c *Client) enrichChannels(ctx context.Context, channels []store.Channel) e
 }
 
 // fetchRecentUploads grabs the latest few upload titles per channel, concurrently.
-// Per-channel failures (e.g. channels with no uploads) are ignored.
-func (c *Client) fetchRecentUploads(ctx context.Context, channels []store.Channel, progress func(done int)) {
+// A channel with no uploads (404 playlist) is fine. Other per-channel errors are
+// collected in failed. Quota or credential errors stop everything and are returned.
+func (c *Client) fetchRecentUploads(ctx context.Context, channels []store.Channel, progress func(done int)) (failed []string, fatal error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	var (
 		wg   sync.WaitGroup
 		mu   sync.Mutex
 		done int
 		sem  = make(chan struct{}, 8)
 	)
+	finish := func(id string, err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		var apiErr *APIError
+		switch {
+		case err == nil:
+		case errors.As(err, &apiErr) && apiErr.NotFound():
+		case errors.As(err, &apiErr) && (apiErr.QuotaExceeded() || apiErr.Unauthorized()):
+			if fatal == nil {
+				fatal = err
+				cancel()
+			}
+		case ctx.Err() != nil: // cancelled because another request failed fatally
+		default:
+			failed = append(failed, id)
+		}
+		done++
+		progress(done)
+	}
 	for i := range channels {
 		ch := &channels[i]
 		if ch.UploadsPlaylist == "" {
-			mu.Lock()
-			done++
-			mu.Unlock()
+			finish(ch.ID, nil)
 			continue
 		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			sem <- struct{}{}
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				finish(ch.ID, ctx.Err())
+				return
+			}
 			defer func() { <-sem }()
 
 			q := url.Values{"part": {"snippet"}, "playlistId": {ch.UploadsPlaylist}, "maxResults": {"8"}}
@@ -236,7 +275,8 @@ func (c *Client) fetchRecentUploads(ctx context.Context, channels []store.Channe
 					} `json:"snippet"`
 				} `json:"items"`
 			}
-			if err := c.do(ctx, http.MethodGet, "playlistItems", q, &res); err == nil {
+			err := c.do(ctx, http.MethodGet, "playlistItems", q, &res)
+			if err == nil {
 				for _, it := range res.Items {
 					ch.RecentTitles = append(ch.RecentTitles, it.Snippet.Title)
 					if it.Snippet.PublishedAt.After(ch.LastUpload) {
@@ -244,17 +284,20 @@ func (c *Client) fetchRecentUploads(ctx context.Context, channels []store.Channe
 					}
 				}
 			}
-			mu.Lock()
-			done++
-			d := done
-			mu.Unlock()
-			progress(d)
+			finish(ch.ID, err)
 		}()
 	}
 	wg.Wait()
+	return failed, fatal
 }
 
 // Unsubscribe deletes a subscription by its subscription ID (not channel ID).
+// A subscription that's already gone (e.g. removed on youtube.com) counts as success.
 func (c *Client) Unsubscribe(ctx context.Context, subscriptionID string) error {
-	return c.do(ctx, http.MethodDelete, "subscriptions", url.Values{"id": {subscriptionID}}, nil)
+	err := c.do(ctx, http.MethodDelete, "subscriptions", url.Values{"id": {subscriptionID}}, nil)
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.NotFound() {
+		return nil
+	}
+	return err
 }

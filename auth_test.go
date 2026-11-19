@@ -37,7 +37,7 @@ func TestInvalidGrantForgetsToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = yt.FetchSubscriptions(t.Context(), func(int, int) {})
+	_, _, err = yt.FetchSubscriptions(t.Context(), func(int, int) {})
 	if !errors.Is(err, ErrReconnect) {
 		t.Fatalf("want ErrReconnect, got %v", err)
 	}

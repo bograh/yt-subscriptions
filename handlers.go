@@ -35,6 +35,7 @@ type App struct {
 	mu          sync.Mutex
 	job         views.Job
 	lastErr     string
+	lastWarn    string
 	oauthStates map[string]time.Time
 }
 
@@ -63,7 +64,7 @@ func (a *App) page(r *http.Request) (views.Page, error) {
 		return views.Page{}, err
 	}
 	a.mu.Lock()
-	job, lastErr := a.job, a.lastErr
+	job, lastErr, lastWarn := a.job, a.lastErr, a.lastWarn
 	a.mu.Unlock()
 	q := r.URL.Query()
 	return views.Page{
@@ -73,6 +74,7 @@ func (a *App) page(r *http.Request) (views.Page, error) {
 		AIConfigured: a.ai.Model != "",
 		Job:          job,
 		Error:        lastErr,
+		Warning:      lastWarn,
 		Stats:        views.ComputeStats(st),
 		List:         views.BuildList(st.Channels, q.Get("group"), q.Get("verdict"), q.Get("q")),
 	}, nil
@@ -124,7 +126,7 @@ func (a *App) startJob(w http.ResponseWriter, r *http.Request, label string, fn 
 		return
 	}
 	a.job = views.Job{Running: true, Label: label}
-	a.lastErr = ""
+	a.lastErr, a.lastWarn = "", ""
 	job := a.job
 	a.mu.Unlock()
 
@@ -156,9 +158,31 @@ func (a *App) handleSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.startJob(w, r, "Syncing subscriptions", func(ctx context.Context, progress func(int, int)) error {
-		fresh, err := yt.FetchSubscriptions(ctx, progress)
+		fresh, uploadFailures, err := yt.FetchSubscriptions(ctx, progress)
 		if err != nil {
+			// Nothing is written: a quota or auth failure must not replace good data.
 			return a.checkAuth(err)
+		}
+		if len(uploadFailures) > 0 {
+			// Keep last sync's upload info for these, instead of making them look inactive.
+			prev, err := a.store.Snapshot(ctx)
+			if err != nil {
+				return err
+			}
+			old := make(map[string]store.Channel, len(prev.Channels))
+			for _, c := range prev.Channels {
+				old[c.ID] = c
+			}
+			failed := make(map[string]bool, len(uploadFailures))
+			for _, id := range uploadFailures {
+				failed[id] = true
+			}
+			for i := range fresh {
+				if p, ok := old[fresh[i].ID]; ok && failed[fresh[i].ID] {
+					fresh[i].LastUpload, fresh[i].RecentTitles = p.LastUpload, p.RecentTitles
+				}
+			}
+			a.warn(fmt.Sprintf("Synced, but recent uploads couldn't be fetched for %d channel(s); their previous upload info was kept.", len(uploadFailures)))
 		}
 		// Analyses and watch stats live in their own tables, so they carry over automatically.
 		return a.store.ReplaceChannels(ctx, fresh)
@@ -205,6 +229,14 @@ func (a *App) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	})
+}
+
+// warn records a non-fatal problem from a background job, shown on the next page load.
+func (a *App) warn(msg string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.lastWarn = msg
+	log.Print(msg)
 }
 
 // ---- actions ----

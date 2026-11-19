@@ -72,6 +72,9 @@ templ Dashboard(p Page) {
 					<p class="mt-0.5 text-ink-2">{ p.Error }</p>
 				</div>
 			}
+			if p.Warning != "" {
+				@notice("Heads up", p.Warning)
+			}
 			@Summary(p.Stats, false)
 			@settings(p)
 			<form
@@ -255,7 +258,11 @@ templ ChannelRow(c store.Channel) {
 		<div class="min-w-0">
 			<a href={ templ.SafeURL(c.URL()) } target="_blank" rel="noreferrer" class="block truncate font-medium hover:underline hover:underline-offset-2">{ c.Title }</a>
 			<p class="mt-0.5 font-mono text-xs text-muted tabular-nums">
-				{ Compact(c.SubscriberCount) } subs ·
+				if c.SubscribersHidden {
+					subs hidden ·
+				} else {
+					{ Compact(c.SubscriberCount) } subs ·
+				}
 				if c.Inactive() {
 					<span class="text-drop">last upload { Ago(c.LastUpload) }</span>
 				} else {

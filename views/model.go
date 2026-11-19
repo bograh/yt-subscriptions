@@ -30,6 +30,7 @@ type Page struct {
 	AIConfigured bool
 	Job          Job
 	Error        string
+	Warning      string
 	Stats        Stats
 	List         List
 }
