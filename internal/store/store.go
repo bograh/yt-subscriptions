@@ -73,39 +73,6 @@ type WatchStat struct {
 	LastWatched time.Time `json:"last_watched"`
 }
 
-const schema = `
-CREATE TABLE IF NOT EXISTS channels (
-	id               TEXT PRIMARY KEY,
-	subscription_id  TEXT NOT NULL,
-	title            TEXT NOT NULL,
-	description      TEXT NOT NULL DEFAULT '',
-	thumbnail        TEXT NOT NULL DEFAULT '',
-	subscribed_at    INTEGER,
-	subscriber_count INTEGER NOT NULL DEFAULT 0,
-	video_count      INTEGER NOT NULL DEFAULT 0,
-	topics           TEXT NOT NULL DEFAULT '[]',
-	uploads_playlist TEXT NOT NULL DEFAULT '',
-	last_upload      INTEGER,
-	recent_titles    TEXT NOT NULL DEFAULT '[]'
-);
-CREATE TABLE IF NOT EXISTS analyses (
-	channel_id   TEXT PRIMARY KEY,
-	category     TEXT NOT NULL,
-	content_type TEXT NOT NULL,
-	verdict      TEXT NOT NULL,
-	reason       TEXT NOT NULL,
-	analyzed_at  INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS watch_stats (
-	channel_id   TEXT PRIMARY KEY,
-	count        INTEGER NOT NULL,
-	last_watched INTEGER
-);
-CREATE TABLE IF NOT EXISTS settings (
-	key   TEXT PRIMARY KEY,
-	value TEXT NOT NULL
-);`
-
 const (
 	keyInterests       = "interests"
 	keySyncedAt        = "synced_at"
@@ -144,9 +111,9 @@ func Open(dir string) (*Store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1) // SQLite has a single writer; this avoids SQLITE_BUSY entirely.
-	if _, err := db.Exec(schema); err != nil {
+	if err := migrate(db); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("create schema: %w", err)
+		return nil, err
 	}
 	s := &Store{db: db}
 	if err := s.migrateJSON(dir); err != nil {
